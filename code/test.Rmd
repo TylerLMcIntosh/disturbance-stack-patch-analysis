@@ -1,0 +1,64 @@
+Run basic spatial statistics on disturbance stack
+
+Tyler L. McIntosh
+CU Boulder CIRES Earth Lab
+Last updated: 10/20/23
+
+This script uses the following naming conventions wherever possible:
+ lowerCamelCase for variables
+ period.separated for functions
+ underscore_separated for files
+
+```{r, echo = FALSE, warning = FALSE}
+# SETUP ----
+## Libraries ----
+
+#Check the required libraries and download if needed
+list.of.packages <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr, forcats
+                      "terra", #New raster data package, documentation pdf here: https://cran.r-project.org/web/packages/terra/terra.pdf
+                      "future", "future.apply", "furrr", "doFuture", "progressr", #Futureverse! https://www.futureverse.org/packages-overview.html; https://henrikbengtsson.github.io/course-stanford-futureverse-2023/
+                      "sf", #New vector data package
+                      "mapview", #For quick interactive mapping
+                      "here", #Relative path best practices
+                      "landscapemetrics",  #Fragstats for R
+                      "tictoc", #time running of processes
+                      "tmap",
+                      "ggpmisc") #For adding R^2 to plots
+
+#Install all packages that aren't installed yet
+install.packages(setdiff(list.of.packages, rownames(installed.packages())))
+
+#Load all packages
+invisible(lapply(list.of.packages, library, character.only = TRUE)) #use 'invisible' to prevent output being displayed
+
+
+## Clean workspace & set up environment ----
+rm(list=ls()) #Ensure empty workspace if running from beginning
+here() #Check here location
+#OR
+#setwd() #Set working directory directly
+options(digits = 6) #Set standard decimal print output
+options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
+```
+
+```{r, echo = FALSE}
+#Load data
+fileLocation <- here::here('data', 'nathan_outputs')
+
+fireInsects <- terra::rast(here::here(fileLocation, "fire_and_insects.tif"))
+fireStack <- terra::rast(here::here(fileLocation, "fire_stack.tif"))
+
+aoiL3 <- sf::st_read(here::here('data', 'aoi',  'NA_CEC_Eco_Level3.shp')) %>% sf::st_transform(crs(fireInsects))
+
+aoiL4 <- sf::st_read(here::here('data', 'aoi', 'us_eco_l4', 'us_eco_l4_no_st.shp')) %>% sf::st_transform(crs(fireInsects))
+  
+
+#Namejoin table
+nameJoin <- cbind(aoiL4$US_L4NAME, 
+                  gsub(" ", "", aoiL4$US_L4NAME),
+                  aoiL4$US_L3NAME) %>% 
+  `colnames<-`(c('ogNm', 'flNm', 'US_L3NAME')) %>%
+  as.data.frame() %>%
+  distinct()
+
+```
