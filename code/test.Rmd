@@ -34,7 +34,7 @@ invisible(lapply(list.of.packages, library, character.only = TRUE)) #use 'invisi
 
 ## Clean workspace & set up environment ----
 rm(list=ls()) #Ensure empty workspace if running from beginning
-here() #Check here location
+here::here() #Check here location
 #OR
 #setwd() #Set working directory directly
 options(digits = 6) #Set standard decimal print output
