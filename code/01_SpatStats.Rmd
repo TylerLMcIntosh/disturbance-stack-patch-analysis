@@ -59,7 +59,12 @@ options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
 plan(multisession)
 
 #Local, or on CyVerse (data storage different...)
-
+computing <- "cyverse" #"cyverse" or "local"
+if(computing == "cyverse") {
+  dynamicRoot <- "../iplant/home/shared/earthlab/macrosystems"
+} else {
+  dynamicRoot <- ""
+}
 
 
 ```
@@ -69,10 +74,10 @@ plan(multisession)
 
 ```{r, echo = FALSE}
 #Load data
-fileLocation <- here::here('data', 'nathan_outputs')
+fileLocation <- here::here(dynamicRoot, 'data', 'nathan_outputs')
 
 fireInsects <- terra::rast(here::here(fileLocation, "fire_and_insects.tif"))
-fireStack <- terra::rast(here::here(fileLocation, "fire_stack.tif"))
+#fireStack <- terra::rast(here::here(fileLocation, "fire_stack.tif"))
 
 #Load EPA ecoregion data from ecoregions package
 epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
