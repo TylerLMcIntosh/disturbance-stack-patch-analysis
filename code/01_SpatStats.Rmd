@@ -60,8 +60,9 @@ options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
 #####EVERYTHING HERE SHOULD BE SET MANUALLY######
 #################################################
 
-computing <- "local" #"cyverse" or "local"
-aoiL3Names <- c("Sierra Nevada", "Middle Rockies", "Idaho Batholith","Southern Rockies")
+computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
+parallelFuture <- TRUE #Sets whether or not parallel computing is used; TRUE or FALSE 
+aoiL3Names <- c("Sierra Nevada", "Middle Rockies", "Idaho Batholith","Southern Rockies") #The names of the EPA Level 3 ecoregions of interest, may be any length
 edgeDepth <- 200 #in meters
 resolution <- 30 #in meters
 
@@ -70,7 +71,7 @@ resolution <- 30 #in meters
 # Manage computing & CI vs local
 
 ```{r}
-#Start futureverse parallel computing
+#Set cores
 nCores <- availableCores()
 if(nCores > 120) {
   nCores <- 120
@@ -78,13 +79,38 @@ if(nCores > 120) {
   nCores <- nCores - 1
 }
 
-plan(multisession, workers = nCores)
+#Start futureverse parallel computing
+if(parallelFuture) {
+  plan(multisession, workers = nCores)
+}
 
 #Set dynamicRoot to set data location
 if(computing == "cyverse") {
   dynamicRoot <- "../iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis"
 } else {
   dynamicRoot <- ""
+}
+
+# A function to test a function that has been set up to run in either sequence or parallel using the futureverse, depending on what plan() has been set. For use in troubleshooting.
+#fun = name of function as a string, e.g. "calculate.class.level.metrics"
+#... = all parameters for running fun
+test.future.function <- function(fun, ...) {
+  
+  #Test sequential version
+  plan(sequential)
+  tic('Run in sequence')
+  sTest <- do.call(fun, list(...))
+  toc()
+  
+  #Test parallel version
+  plan(multisession, workers = nCores)
+  tic('Run in parallel')
+  pTest <- do.call(fun, list(...))
+  toc()
+  
+  #Check if outputs are identical
+  glue("Outputs identical? - {identical(sTest, pTest)}")
+  
 }
 
 ```
@@ -201,6 +227,7 @@ fireTestList <- careful.clip.set(testFireStack, aoiL4Interest[1:2,], "us_l4l3nam
 
 
 
+
 ```
 
 
@@ -261,33 +288,67 @@ add.data.to.metric.df <- function(df, nm) {
     dplyr::mutate(region = nm,
                   epaLevel = dplyr::case_when(region %in% nameJoin$us_l3nameclean ~ "epaL3",
                                               region %in% nameJoin$us_l4l3name ~ "epaL4"))
+  #Add original data type to 
   return(df)
 }
 
+#Function to run the landscapemetrics::calculate_lsm function in parallel environment
+parallel.calculate.lsm <- function(land, ...) {
+  out <- land |>
+    terra::unwrap() |>
+    landscapemetrics::calculate_lsm(...)
+  return(out)
+}
 
 
 #Function to calculate class-level metrics, add LSM names, and add contextual data over a named list of landscapes
+#This function is set up to run in parallel with the futureverse
 calculate.class.level.metrics <- function(landList) {
-  out <- landList |>
-    purrr::map(landscapemetrics::calculate_lsm,
-               what = c(
-                         'lsm_c_ed', #patch area-weighted edge density
-                         'lsm_c_ca', #total class area
-                         'lsm_c_ai',
-                         'lsm_c_clumpy',
-                         'lsm_c_cpland',
-                         'lsm_c_dcad',
-                         'lsm_c_division',
-                         'lsm_c_lpi',
-                         'lsm_c_lsi',
-                         'lsm_c_mesh',
-                         'lsm_c_np',
-                         'lsm_c_pafrac',
-                         'lsm_c_tca',
-                         'lsm_c_cohesion'), #aggregation of patches
-               directions = 8,
-               edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
-               progress = TRUE) |>
+  if(is(future::plan(), "sequential")) {
+      out <- landList |>
+        purrr::map(landscapemetrics::calculate_lsm,
+                   what = c(
+                             'lsm_c_ed', #patch area-weighted edge density
+                             'lsm_c_ca', #total class area
+                             'lsm_c_ai',
+                             'lsm_c_clumpy',
+                             'lsm_c_cpland',
+                             'lsm_c_dcad',
+                             'lsm_c_division',
+                             'lsm_c_lpi',
+                             'lsm_c_lsi',
+                             'lsm_c_mesh',
+                             'lsm_c_np',
+                             'lsm_c_pafrac',
+                             'lsm_c_tca',
+                             'lsm_c_cohesion'), #aggregation of patches
+                   directions = 8,
+                   edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
+                   progress = TRUE)
+  } else {
+      out <- landList |>
+        purrr::map(terra::wrap) |> #wrap each raster to send to node
+        furrr::future_map(parallel.calculate.lsm, #use parallelized version that unwraps first
+                   what = c(
+                             'lsm_c_ed', #patch area-weighted edge density
+                             'lsm_c_ca', #total class area
+                             'lsm_c_ai',
+                             'lsm_c_clumpy',
+                             'lsm_c_cpland',
+                             'lsm_c_dcad',
+                             'lsm_c_division',
+                             'lsm_c_lpi',
+                             'lsm_c_lsi',
+                             'lsm_c_mesh',
+                             'lsm_c_np',
+                             'lsm_c_pafrac',
+                             'lsm_c_tca',
+                             'lsm_c_cohesion'), #aggregation of patches
+                   directions = 8,
+                   edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
+                   progress = TRUE) 
+  }
+  out <- out |>
     purrr::map(dplyr::left_join, y = lsm_abbreviations_names, #Add full metric names
                          by = c("metric", "level")) %>%
     purrr::map2(.f = add.data.to.metric.df, .y = names(.)) #Add more data using add.data.to.metric.df function
@@ -297,16 +358,27 @@ calculate.class.level.metrics <- function(landList) {
 
 #Function to calculate class-level metrics, add LSM names, and add contextual data over a named list of landscapes
 calculate.patch.level.metrics <- function(landList) {
-  out <- landList |>
-    purrr::map(landscapemetrics::calculate_lsm,
-               what = "patch", #all patch metrics
-               directions = 8,
-               edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
-               progress = TRUE) |>
+  if(is(future::plan(), "sequential")) {
+      out <- landList |>
+        purrr::map(landscapemetrics::calculate_lsm,
+                   what = "patch", #all patch metrics
+                   directions = 8,
+                   edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
+                   progress = TRUE)
+  } else {
+      out <- landList |>
+        purrr::map(terra::wrap) |> #wrap each raster to send to node
+        furrr::future_map(parallel.calculate.lsm, #use parallelized version that unwraps first
+                   what = "patch", #all patch metrics
+                   directions = 8,
+                   edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
+                   progress = TRUE)
+  }
+  out <- out |>
     purrr::map(dplyr::left_join, y = lsm_abbreviations_names, #Add full metric names
                          by = c("metric", "level")) %>%
     purrr::map2(.f = add.data.to.metric.df, .y = names(.)) #Add more data using add.data.to.metric.df function
-  return(out)
+  return(out)  
 }
 
 
@@ -329,11 +401,32 @@ classL4 %>%
 
 
 
+
+
+
+
+test.future.function("calculate.class.level.metrics", fireInsectTestList)
+
+
+
+
+    
+
+#Write out
+classL4_ptest %>%
+  purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT)
+
+
+
+
+
 # #Write out landscape metric CSVs
 # write.land.metric.csv.w.name <- function(df, nm, nmApp, dir) {
 #   flNm <- glue::glue("{nm}{nmApp}.csv")
 #   readr::write_csv(df, here::here(dir, flNm))
 # }
+x <- t %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
+
 # xx <- tt %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
 # xx %>% purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), nmApp = "_class_", dir = outDirT)
 
