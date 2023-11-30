@@ -9,7 +9,29 @@ This script uses the following naming conventions wherever possible:
  period.separated for functions
  underscore_separated for files
 
-# Setup
+# SET GLOBAL PARAMETERS
+
+```{r}
+rm(list=ls()) #Ensure empty workspace if running from beginning
+
+#################################################
+#####EVERYTHING HERE SHOULD BE SET MANUALLY######
+#################################################
+
+computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
+rstudio <- TRUE #Sets whether or not the script is being used in RStudio or not; important for CyVerse processing; TRUE or FALSE
+parallelFuture <- TRUE #Sets whether or not parallel computing is used; TRUE or FALSE 
+aoiL3Names <- c("Sierra Nevada", "Middle Rockies", "Idaho Batholith","Southern Rockies") #The names of the EPA Level 3 ecoregions of interest, may be any length
+edgeDepth <- 200 #in meters
+resolution <- 30 #in meters
+
+if(computing == "cyverse" & rstudio) {
+  Sys.setenv(PROJ_LIB="/opt/conda/envs/earth-analytics-python/share/proj")
+}
+
+```
+
+#Load packages etc
 
 ```{r, echo = FALSE, warning = FALSE}
 # SETUP ----
@@ -44,7 +66,6 @@ library(ecoregions)
 
 
 ## Clean workspace & set up environment ----
-rm(list=ls()) #Ensure empty workspace if running from beginning
 here::here() #Check here location
 here::i_am("code/01_SpatStats.Rmd")
 #OR
@@ -53,26 +74,12 @@ options(digits = 6) #Set standard decimal print output
 options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
 ```
 
-# SET ANALYSIS VARIABLES
-
-```{r}
-#################################################
-#####EVERYTHING HERE SHOULD BE SET MANUALLY######
-#################################################
-
-computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
-parallelFuture <- TRUE #Sets whether or not parallel computing is used; TRUE or FALSE 
-aoiL3Names <- c("Sierra Nevada", "Middle Rockies", "Idaho Batholith","Southern Rockies") #The names of the EPA Level 3 ecoregions of interest, may be any length
-edgeDepth <- 200 #in meters
-resolution <- 30 #in meters
-
-```
 
 # Manage computing & CI vs local
 
 ```{r}
 #Set cores
-nCores <- availableCores()
+nCores <- future::availableCores()
 if(nCores > 120) {
   nCores <- 120
 }else{
@@ -81,7 +88,7 @@ if(nCores > 120) {
 
 #Start futureverse parallel computing
 if(parallelFuture) {
-  plan(multisession, workers = nCores)
+  future::plan("multisession", workers = nCores)
 }
 
 #Set dynamicRoot to set data location
@@ -98,16 +105,16 @@ if(computing == "cyverse") {
 test.future.function <- function(fun, ...) {
   
   #Get current plan
-  initialPlan <- plan()
+  initialPlan <- future::plan()
   
   #Test sequential version
-  plan(sequential)
+  future::plan("sequential")
   tic(glue::glue('Time to run function {fun} in sequence'))
   sTest <- do.call(fun, list(...))
   toc()
   
   #Test parallel version
-  plan(multisession, workers = nCores)
+  future::plan("multisession", workers = nCores)
   tic(glue::glue('Time to run function {fun} in parallel'))
   pTest <- do.call(fun, list(...))
   toc()
@@ -116,7 +123,7 @@ test.future.function <- function(fun, ...) {
   glue("Outputs identical? - {identical(sTest, pTest)}")
   
   #Reset plan to original
-  plan(initialPlan)
+  future::plan(initialPlan)
   print(glue::glue("Plan reset"))
   
 }
@@ -131,16 +138,16 @@ test.future.function <- function(fun, ...) {
 #Load data
 fileLocation <- here::here(dynamicRoot, 'data', 'nathan_outputs')
 
-fireInsects <- terra::rast(here::here(fileLocation, "fire_and_insects.tif"))
+fireInsects <- terra::rast(here::here(fileLocation, "fire_and_insects2.tif"))
 #fireStack <- terra::rast(here::here(fileLocation, "fire_stack.tif"))
 
 testFireStack <- terra::rast(here::here('data', 'derived', 'fire_dist_stack_west.tif'))
 
 #Load EPA ecoregion data from ecoregions package
 epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
-  sf::st_transform(crs(fireInsects))
+  sf::st_transform(terra::crs(fireInsects))
 epaL4 <- ecoregions::ContinentalUsEcoregion4 %>% 
-  sf::st_transform(crs(fireInsects))
+  sf::st_transform(terra::crs(fireInsects))
 
   
 #EPA ecoregion distinct name table for joins
@@ -283,29 +290,40 @@ if (!dir.exists(outDirT)){
 
 #Function to add additional data to the metrics dataframe
 #Script-specific, do not port
-add.data.to.metric.df <- function(df, nm) {
-  #Add year from layer data
-  if(length(unique(df$layer)) == 1) { #If single-layer raster was used, it is not a time series
-  df <- df |>
-    dplyr::mutate(year = NA)
-  } else {
-    df <- df |>
-      dplyr::mutate(year = layer + 1998) #NOTE: this is hard-coded in, not pulled from raster!
-  }
+add.data.to.metric.df <- function(df, nm, layerNms) {
   #Add region name & level to dataframe
   df <- df |>
     dplyr::mutate(region = nm,
                   epaLevel = dplyr::case_when(region %in% nameJoin$us_l3nameclean ~ "epaL3",
                                               region %in% nameJoin$us_l4l3name ~ "epaL4"))
-  #Add original data type to 
-  return(df)
 }
 
+
+#Function to run landscapemetrics::calculate_lsm and add the layer names
+calculate.lsm.with.names <- function(land, ...) {
+  out <- land |>
+    landscapemetrics::calculate_lsm(...) |>
+    dplyr::mutate(layerName = names(land)[layer])
+  return(out)
+}
+
+
 #Function to run the landscapemetrics::calculate_lsm function in parallel environment
-parallel.calculate.lsm <- function(land, ...) {
+parallel.calculate.lsm.with.names <- function(land, ...) {
   out <- land |>
     terra::unwrap() |>
-    landscapemetrics::calculate_lsm(...)
+    calculate.lsm.with.names(...)
+  return(out)
+}
+
+#Function to add additional data to the metrics dataframe
+#Script-specific, do not port
+add.region.to.metric.df <- function(df, nm) {
+  #Add region name & level to dataframe
+  df <- df |>
+    dplyr::mutate(region = nm,
+                  epaLevel = dplyr::case_when(region %in% nameJoin$us_l3nameclean ~ "epaL3",
+                                              region %in% nameJoin$us_l4l3name ~ "epaL4"))
   return(out)
 }
 
@@ -316,7 +334,7 @@ calculate.class.level.metrics <- function(landList) {
   if(is(future::plan(), "sequential")) {
     print('Processing in sequence')
       out <- landList |>
-        purrr::map(landscapemetrics::calculate_lsm,
+        purrr::map(calculate.lsm.with.names, #use version that includes raster layer names in output
                    what = c(
                              'lsm_c_ed', #patch area-weighted edge density
                              'lsm_c_ca', #total class area
@@ -334,12 +352,13 @@ calculate.class.level.metrics <- function(landList) {
                              'lsm_c_cohesion'), #aggregation of patches
                    directions = 8,
                    edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
-                   progress = TRUE)
+                   progress = TRUE,
+                   full_name = TRUE)
   } else {
     print('Processing in parallel')
       out <- landList |>
         purrr::map(terra::wrap) |> #wrap each raster to send to node
-        furrr::future_map(parallel.calculate.lsm, #use parallelized version that unwraps first
+        furrr::future_map(parallel.calculate.lsm.with.names, #use parallelized version that unwraps first
                    what = c(
                              'lsm_c_ed', #patch area-weighted edge density
                              'lsm_c_ca', #total class area
@@ -357,38 +376,36 @@ calculate.class.level.metrics <- function(landList) {
                              'lsm_c_cohesion'), #aggregation of patches
                    directions = 8,
                    edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
-                   progress = TRUE) 
+                   progress = TRUE,
+                   full_name = TRUE) 
   }
-  out <- out |>
-    purrr::map(dplyr::left_join, y = lsm_abbreviations_names, #Add full metric names
-                         by = c("metric", "level")) %>%
-    purrr::map2(.f = add.data.to.metric.df, .y = names(.)) #Add more data using add.data.to.metric.df function
+  out <- out %>%
+    purrr::map2(.f = add.region.to.metric.df, .y = names(.)) #Add more data using add.data.to.metric.df function
   return(out)
 }
-
 
 #Function to calculate class-level metrics, add LSM names, and add contextual data over a named list of landscapes
 calculate.patch.level.metrics <- function(landList) {
   if(is(future::plan(), "sequential")) {
       out <- landList |>
-        purrr::map(landscapemetrics::calculate_lsm,
+        purrr::map(landscapemetrics::calculate.lsm.with.names,
                    what = "patch", #all patch metrics
                    directions = 8,
                    edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
-                   progress = TRUE)
+                   progress = TRUE,
+                   full_name = TRUE)
   } else {
       out <- landList |>
         purrr::map(terra::wrap) |> #wrap each raster to send to node
-        furrr::future_map(parallel.calculate.lsm, #use parallelized version that unwraps first
+        furrr::future_map(parallel.calculate.lsm.with.names, #use parallelized version that unwraps first
                    what = "patch", #all patch metrics
                    directions = 8,
                    edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
-                   progress = TRUE)
+                   progress = TRUE,
+                   full_name = TRUE)
   }
-  out <- out |>
-    purrr::map(dplyr::left_join, y = lsm_abbreviations_names, #Add full metric names
-                         by = c("metric", "level")) %>%
-    purrr::map2(.f = add.data.to.metric.df, .y = names(.)) #Add more data using add.data.to.metric.df function
+  out <- out %>%
+    purrr::map2(.f = add.region.to.metric.df, .y = names(.)) #Add more data using add.data.to.metric.df function
   return(out)  
 }
 
@@ -415,9 +432,6 @@ classL4 %>%
 
 
 
-#Write out
-classL4_ptest %>%
-  purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT)
 
 
 
@@ -430,7 +444,7 @@ classL4_ptest %>%
 # }
 x <- t %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
 
-# xx <- tt %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
+xx <- tt %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
 # xx %>% purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), nmApp = "_class_", dir = outDirT)
 
 
