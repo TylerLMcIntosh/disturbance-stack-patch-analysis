@@ -91,27 +91,36 @@ if(computing == "cyverse") {
   dynamicRoot <- ""
 }
 
-# A function to test a function that has been set up to run in either sequence or parallel using the futureverse, depending on what plan() has been set. For use in troubleshooting.
+# A function to test a function that has been set up to run in either sequence or parallel using the futureverse, depending on what plan() has been set.
+#For use in troubleshooting. This function will reset plan() to the state before the function was run
 #fun = name of function as a string, e.g. "calculate.class.level.metrics"
 #... = all parameters for running fun
 test.future.function <- function(fun, ...) {
   
+  #Get current plan
+  initialPlan <- plan()
+  
   #Test sequential version
   plan(sequential)
-  tic('Run in sequence')
+  tic(glue::glue('Time to run function {fun} in sequence'))
   sTest <- do.call(fun, list(...))
   toc()
   
   #Test parallel version
   plan(multisession, workers = nCores)
-  tic('Run in parallel')
+  tic(glue::glue('Time to run function {fun} in parallel'))
   pTest <- do.call(fun, list(...))
   toc()
   
   #Check if outputs are identical
   glue("Outputs identical? - {identical(sTest, pTest)}")
   
+  #Reset plan to original
+  plan(initialPlan)
+  print(glue::glue("Plan reset"))
+  
 }
+
 
 ```
 
@@ -305,6 +314,7 @@ parallel.calculate.lsm <- function(land, ...) {
 #This function is set up to run in parallel with the futureverse
 calculate.class.level.metrics <- function(landList) {
   if(is(future::plan(), "sequential")) {
+    print('Processing in sequence')
       out <- landList |>
         purrr::map(landscapemetrics::calculate_lsm,
                    what = c(
@@ -326,6 +336,7 @@ calculate.class.level.metrics <- function(landList) {
                    edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
                    progress = TRUE)
   } else {
+    print('Processing in parallel')
       out <- landList |>
         purrr::map(terra::wrap) |> #wrap each raster to send to node
         furrr::future_map(parallel.calculate.lsm, #use parallelized version that unwraps first
@@ -403,14 +414,6 @@ classL4 %>%
 
 
 
-
-
-test.future.function("calculate.class.level.metrics", fireInsectTestList)
-
-
-
-
-    
 
 #Write out
 classL4_ptest %>%
