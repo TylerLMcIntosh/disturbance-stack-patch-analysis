@@ -423,30 +423,30 @@ write.land.metric.csv.w.name <- function(df, nm, dir) {
 #Create level 4 class metric list
 classL4 <- fireInsectTestList |>
   calculate.class.level.metrics()
-#Write out
-classL4 %>%
-  purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT)
-
-
-
-
-
-
-
-
-
-
-
-
-# #Write out landscape metric CSVs
-# write.land.metric.csv.w.name <- function(df, nm, nmApp, dir) {
-#   flNm <- glue::glue("{nm}{nmApp}.csv")
-#   readr::write_csv(df, here::here(dir, flNm))
-# }
-x <- t %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
-
-xx <- tt %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
-# xx %>% purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), nmApp = "_class_", dir = outDirT)
+# #Write out
+# classL4 %>%
+#   purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT)
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# # #Write out landscape metric CSVs
+# # write.land.metric.csv.w.name <- function(df, nm, nmApp, dir) {
+# #   flNm <- glue::glue("{nm}{nmApp}.csv")
+# #   readr::write_csv(df, here::here(dir, flNm))
+# # }
+# x <- t %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
+# 
+# xx <- tt %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
+# # xx %>% purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), nmApp = "_class_", dir = outDirT)
 
 
 
