@@ -25,6 +25,7 @@ list.of.packages <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr
                       "landscapemetrics",  #Fragstats for R
                       "tictoc", #time running of processes
                       "tmap",
+                      "purrr",
                       "glue", #easy strings
                       "remotes", #to access github libraries
                       "ggpmisc") #For adding R^2 to plots
@@ -52,20 +53,39 @@ options(digits = 6) #Set standard decimal print output
 options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
 ```
 
+# SET ANALYSIS VARIABLES
+
+```{r}
+#################################################
+#####EVERYTHING HERE SHOULD BE SET MANUALLY######
+#################################################
+
+computing <- "local" #"cyverse" or "local"
+aoiL3Names <- c("Sierra Nevada", "Middle Rockies", "Idaho Batholith","Southern Rockies")
+edgeDepth <- 200 #in meters
+resolution <- 30 #in meters
+
+```
+
 # Manage computing & CI vs local
 
 ```{r}
 #Start futureverse parallel computing
-plan(multisession)
+nCores <- availableCores()
+if(nCores > 120) {
+  nCores <- 120
+}else{
+  nCores <- nCores - 1
+}
 
-#Local, or on CyVerse (data storage different...)
-computing <- "cyverse" #"cyverse" or "local"
+plan(multisession, workers = nCores)
+
+#Set dynamicRoot to set data location
 if(computing == "cyverse") {
-  dynamicRoot <- "../iplant/home/shared/earthlab/macrosystems"
+  dynamicRoot <- "../iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis"
 } else {
   dynamicRoot <- ""
 }
-
 
 ```
 
@@ -78,6 +98,8 @@ fileLocation <- here::here(dynamicRoot, 'data', 'nathan_outputs')
 
 fireInsects <- terra::rast(here::here(fileLocation, "fire_and_insects.tif"))
 #fireStack <- terra::rast(here::here(fileLocation, "fire_stack.tif"))
+
+testFireStack <- terra::rast(here::here('data', 'derived', 'fire_dist_stack_west.tif'))
 
 #Load EPA ecoregion data from ecoregions package
 epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
@@ -101,20 +123,17 @@ nameJoin <- cbind(epaL4$us_l4name,
 # Set the areas of interest
 
 ```{r}
-aoiL3Interest <- epaL3 %>% filter(us_l3name == "Sierra Nevada" | 
-                                us_l3name == "Middle Rockies" | 
-                                us_l3name == "Idaho Batholith" | 
-                                us_l3name == "Southern Rockies") %>%
+
+#EPA level 3 AOI
+aoiL3Interest <- epaL3 %>%
+  filter(us_l3name %in% aoiL3Names) %>%
   group_by(us_l3name) %>%
   summarize(geometry = st_union(geometry)) %>%
   mutate(us_l3nameclean = gsub(" ", "", us_l3name))
 
-
+#EPA level 4 AOI
 aoiL4Interest <- epaL4 %>%
-  filter(us_l3name == "Sierra Nevada" | 
-                                us_l3name == "Middle Rockies" | 
-                                us_l3name == "Idaho Batholith" | 
-                                us_l3name == "Southern Rockies") %>%
+  filter(us_l3name %in% aoiL3Names) %>%
   group_by(us_l4name, us_l3name) %>%
   summarize(geometry = st_union(geometry)) %>%
   left_join(nameJoin, join_by(us_l3name, us_l4name))
@@ -124,9 +143,16 @@ aoiL4Interest <- epaL4 %>%
 # Create raster sets for AOIs
 
 ```{r}
+
+#############NOTE###############
+#Took some time to try and parallelize this for future use; turns out that SpatVector & SpatRaster objects don't parallelize well; need to either create the object on the core, or wrap/unwrap the files.
+
+
+
 #Function to clip a raster to a vector, ensuring in same projection
 #Returns raster in original projection, but clipped and masked to vector
 careful.clip <- function(raster, vector) {
+  #raster <- terra::unwrap(raster) #If it's a wrapped raster for parallelizing, unwrap
   if (sf::st_crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
     print("Projecting vector")
     vector <- sf::st_transform(vector, terra::crs(raster)) 
@@ -140,27 +166,225 @@ careful.clip <- function(raster, vector) {
   return(r)
 }
 
+
 #Function to clip a raster to a set of polygons (one clip per polygon in set),
 #ensuring they are in the same projection
-#Namefield indicates the field to use to name the item in the returned list (e.g. us_l3name)
+#Namefield indicates the field to use to name the item in the returned list (e.g. "us_l4l3name")
 #Returns the set of rasters as a named list 
 careful.clip.set <- function(raster, vectors, namefield) {
-  out <- list()
-  nms <- c()
-  for(i in 1:nrow(vectors)) {
-    vec <- vectors[i,]
-    clipped <- careful.clip(raster, vec)
-    nm <- dplyr::select(sf::st_drop_geometry(vec) %>% ungroup(), {{namefield}}) %>%
-  as.character()
-    out[[nm]] <- clipped
-  }
+  splitVec <- split(vectors, f=vectors[[namefield]])
+   # if (is(future::plan() ,"sequential")) {
+    out <- splitVec |> purrr::map(careful.clip, raster = raster)
+  # } else {
+  #   out <- splitVec |> furrr::future_map(careful.clip, raster = wrap(raster))
+  # }
   return(out)
 }
 
-#fireInsectInterestList <- careful.clip.set(fireInsects, aoiL4Interest, us_l4l3name)
-fireInsectInterestList <- careful.clip.set(fireInsects, aoiL3Interest, us_l3nameclean)
+#fireInsectInterestList <- careful.clip.set(fireInsects, aoiL3Interest, us_l3nameclean)
+
+#options(future.globals.onReference = "error")
+
+plan(sequential)
+
+tic("sequential")
+fireInsectTestList <- careful.clip.set(fireInsects, aoiL4Interest[1:2,], "us_l4l3name")
+toc()
+fireTestList <- careful.clip.set(testFireStack, aoiL4Interest[1:2,], "us_l4l3name")
+
+# plan(multisession, workers = nCores)
+# 
+# tic("parallel")
+# fireInsectInterestList2 <- careful.clip.set(fireInsects, aoiL4Interest[1:2,], "us_l4l3name")
+# toc()
+
 
 
 
 ```
 
+
+# Perform computations on forest mask layer to get per/forest stats
+
+```{r}
+
+#Load forest
+fMask <- terra::rast(here::here('data', 'raw', 'landfire-bps-derived-forest-mask.tif'))
+
+#Clip and mask to EPA L4 areas
+forestMaskL4 <- careful.clip.set(fMask, aoiL4Interest[1:2,], "us_l4l3name")
+
+
+#Get the number of forested pixels
+forestL4 <- forestMaskL4 |>
+  lapply(FUN = function(x) {global(x, fun = "notNA")})
+
+#Clean up and join together with region name data
+forestL4Stats <- cbind(names(forestMaskL4),
+                bind_rows(forestL4)) |>
+  dplyr::rename(us_l4l3name = `names(forestMaskL4)`) |>
+  dplyr::mutate(forestAreaHa = notNA * 900 * .0001) |> #900m^2 / pixel, ha conversion .0001
+  dplyr::left_join(nameJoin, by = join_by(us_l4l3name))
+
+#Group stats from L4 to L3
+forestL3Stats <- forestL4Stats |>
+  dplyr::group_by(us_l3name, us_l3nameclean) |>
+  dplyr::summarize(forestAreaHa = sum(forestAreaHa))
+
+#Remove un-needed objects
+rm(fMask, forestMaskL4, forestL4)
+```
+
+Create csv files with data on landscape metrics for all regions in the AOI, EPA L4 & L3
+
+```{r}
+
+#Set outdirectory
+outDirT <- here("data", "derived", "metric_tables")
+if (!dir.exists(outDirT)){
+  dir.create(outDirT)
+}
+
+#Function to add additional data to the metrics dataframe
+#Script-specific, do not port
+add.data.to.metric.df <- function(df, nm) {
+  #Add year from layer data
+  if(length(unique(df$layer)) == 1) { #If single-layer raster was used, it is not a time series
+  df <- df |>
+    dplyr::mutate(year = NA)
+  } else {
+    df <- df |>
+      dplyr::mutate(year = layer + 1998) #NOTE: this is hard-coded in, not pulled from raster!
+  }
+  #Add region name & level to dataframe
+  df <- df |>
+    dplyr::mutate(region = nm,
+                  epaLevel = dplyr::case_when(region %in% nameJoin$us_l3nameclean ~ "epaL3",
+                                              region %in% nameJoin$us_l4l3name ~ "epaL4"))
+  return(df)
+}
+
+
+
+#Function to calculate class-level metrics, add LSM names, and add contextual data over a named list of landscapes
+calculate.class.level.metrics <- function(landList) {
+  out <- landList |>
+    purrr::map(landscapemetrics::calculate_lsm,
+               what = c(
+                         'lsm_c_ed', #patch area-weighted edge density
+                         'lsm_c_ca', #total class area
+                         'lsm_c_ai',
+                         'lsm_c_clumpy',
+                         'lsm_c_cpland',
+                         'lsm_c_dcad',
+                         'lsm_c_division',
+                         'lsm_c_lpi',
+                         'lsm_c_lsi',
+                         'lsm_c_mesh',
+                         'lsm_c_np',
+                         'lsm_c_pafrac',
+                         'lsm_c_tca',
+                         'lsm_c_cohesion'), #aggregation of patches
+               directions = 8,
+               edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
+               progress = TRUE) |>
+    purrr::map(dplyr::left_join, y = lsm_abbreviations_names, #Add full metric names
+                         by = c("metric", "level")) %>%
+    purrr::map2(.f = add.data.to.metric.df, .y = names(.)) #Add more data using add.data.to.metric.df function
+  return(out)
+}
+
+
+#Function to calculate class-level metrics, add LSM names, and add contextual data over a named list of landscapes
+calculate.patch.level.metrics <- function(landList) {
+  out <- landList |>
+    purrr::map(landscapemetrics::calculate_lsm,
+               what = "patch", #all patch metrics
+               directions = 8,
+               edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
+               progress = TRUE) |>
+    purrr::map(dplyr::left_join, y = lsm_abbreviations_names, #Add full metric names
+                         by = c("metric", "level")) %>%
+    purrr::map2(.f = add.data.to.metric.df, .y = names(.)) #Add more data using add.data.to.metric.df function
+  return(out)
+}
+
+
+#Write out landscape metric CSVs
+write.land.metric.csv.w.name <- function(df, nm, dir) {
+  nmApp <- glue::glue("_{unique(df$level)}_{unique(df$epaLevel)}_")
+  flNm <- glue::glue("{nm}{nmApp}.csv")
+  readr::write_csv(df, here::here(dir, flNm))
+}
+
+
+
+#Create level 4 class metric list
+classL4 <- fireInsectTestList |>
+  calculate.class.level.metrics()
+#Write out
+classL4 %>%
+  purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT)
+
+
+
+
+# #Write out landscape metric CSVs
+# write.land.metric.csv.w.name <- function(df, nm, nmApp, dir) {
+#   flNm <- glue::glue("{nm}{nmApp}.csv")
+#   readr::write_csv(df, here::here(dir, flNm))
+# }
+# xx <- tt %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
+# xx %>% purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), nmApp = "_class_", dir = outDirT)
+
+
+
+# t <- fireInsectTestList |>
+#   purrr::map(landscapemetrics::calculate_lsm,
+#              what = c(
+#                        'lsm_c_ed', #patch area-weighted edge density
+#                        'lsm_c_ai',
+#                        'lsm_c_clumpy',
+#                        'lsm_c_cpland',
+#                        'lsm_c_dcad',
+#                        'lsm_c_division',
+#                        'lsm_c_lpi',
+#                        'lsm_c_lsi',
+#                        'lsm_c_mesh',
+#                        'lsm_c_np',
+#                        'lsm_c_pafrac',
+#                        'lsm_c_tca',
+#                        'lsm_c_cohesion'), #aggregation of patches
+#              directions = 8,
+#              progress = TRUE,) |>
+#   purrr::map(dplyr::left_join, y = lsm_abbreviations_names,
+#                        by = c("metric", "level"))
+# 
+# tt <- fireTestList |>
+#   purrr::map(landscapemetrics::calculate_lsm,
+#              what = c(
+#                        'lsm_c_ed', #patch area-weighted edge density
+#                        'lsm_c_ai',
+#                        'lsm_c_clumpy',
+#                        'lsm_c_cpland',
+#                        'lsm_c_dcad',
+#                        'lsm_c_division',
+#                        'lsm_c_lpi',
+#                        'lsm_c_lsi',
+#                        'lsm_c_mesh',
+#                        'lsm_c_np',
+#                        'lsm_c_pafrac',
+#                        'lsm_c_tca',
+#                        'lsm_c_cohesion'), #aggregation of patches
+#              directions = 8,
+#              progress = TRUE,) |>
+#   purrr::map(dplyr::left_join, y = lsm_abbreviations_names, #Add full metric names
+#                        by = c("metric", "level")) %>%
+#   purrr::map2(.f = add.data.to.metric.df, .y = names(.)) #Add more data
+
+
+
+
+
+
+```
