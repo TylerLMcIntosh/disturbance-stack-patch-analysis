@@ -42,7 +42,7 @@ list.of.packages <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr
                       "terra", #New raster data package, documentation pdf here: https://cran.r-project.org/web/packages/terra/terra.pdf
                       "future", "future.apply", "furrr", "doFuture", "progressr", #Futureverse! https://www.futureverse.org/packages-overview.html; https://henrikbengtsson.github.io/course-stanford-futureverse-2023/
                       "sf", #New vector data package
-                      "mapview", #For quick interactive mapping
+                      #"mapview", #For quick interactive mapping
                       "here", #Relative path best practices
                       "landscapemetrics",  #Fragstats for R
                       "tictoc", #time running of processes
@@ -55,8 +55,14 @@ list.of.packages <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr
 #Install all packages that aren't installed yet
 install.packages(setdiff(list.of.packages, rownames(installed.packages())))
 
+#Force install raster if on cyverse, since old version is installed
+if(computing == "cyverse") {
+  install.packages("raster")
+}
+
 #Load all packages
 invisible(lapply(list.of.packages, library, character.only = TRUE)) #use 'invisible' to prevent output being displayed
+#If this line throws an error on cyverse, close R session and re-open
 
 #Install ecoregions package from github if needed, then load package
 if(!"ecoregions" %in% rownames(installed.packages())) {
@@ -91,12 +97,6 @@ if(parallelFuture) {
   future::plan("multisession", workers = nCores)
 }
 
-#Set dynamicRoot to set data location
-if(computing == "cyverse") {
-  dynamicRoot <- "../iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis"
-} else {
-  dynamicRoot <- ""
-}
 
 # A function to test a function that has been set up to run in either sequence or parallel using the futureverse, depending on what plan() has been set.
 #For use in troubleshooting. This function will reset plan() to the state before the function was run
@@ -136,12 +136,25 @@ test.future.function <- function(fun, ...) {
 
 ```{r, echo = FALSE}
 #Load data
-fileLocation <- here::here(dynamicRoot, 'data', 'nathan_outputs')
 
-fireInsects <- terra::rast(here::here(fileLocation, "fire_and_insects2.tif"))
-#fireStack <- terra::rast(here::here(fileLocation, "fire_stack.tif"))
+if(computing == "local") {
+  fileLocation <- here::here('data', 'nathan_outputs')
 
-testFireStack <- terra::rast(here::here('data', 'derived', 'fire_dist_stack_west.tif'))
+  fireInsects <- terra::rast(here::here(fileLocation, "fire_and_insects2.tif"))
+  #fireStack <- terra::rast(here::here(fileLocation, "fire_stack.tif"))
+  
+  fireStack <- terra::rast(here::here('data', 'derived', 'fire_dist_stack_west.tif'))
+  #Load forest
+  fMask <- terra::rast(here::here('data', 'raw', 'landfire-bps-derived-forest-mask.tif'))
+
+} else if(computing == "cyverse") {
+  fireInsects <- terra::rast("~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/nathan_outputs/fire_and_insects.tif")
+  fireStack <- terra::rast("~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/derived/fire_dist_stack_west.tif")
+  #Load forest
+  fMask <- terra::rast(here::here('~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/raw/landfire-bps-derived-forest-mask.tif'))
+}
+
+
 
 #Load EPA ecoregion data from ecoregions package
 epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
@@ -227,12 +240,11 @@ careful.clip.set <- function(raster, vectors, namefield) {
 
 #options(future.globals.onReference = "error")
 
-plan(sequential)
 
 tic("sequential")
 fireInsectTestList <- careful.clip.set(fireInsects, aoiL4Interest[1:2,], "us_l4l3name")
 toc()
-fireTestList <- careful.clip.set(testFireStack, aoiL4Interest[1:2,], "us_l4l3name")
+fireTestList <- careful.clip.set(fireStack, aoiL4Interest[1:2,], "us_l4l3name")
 
 # plan(multisession, workers = nCores)
 # 
@@ -251,8 +263,6 @@ fireTestList <- careful.clip.set(testFireStack, aoiL4Interest[1:2,], "us_l4l3nam
 
 ```{r}
 
-#Load forest
-fMask <- terra::rast(here::here('data', 'raw', 'landfire-bps-derived-forest-mask.tif'))
 
 #Clip and mask to EPA L4 areas
 forestMaskL4 <- careful.clip.set(fMask, aoiL4Interest[1:2,], "us_l4l3name")
@@ -288,15 +298,6 @@ if (!dir.exists(outDirT)){
   dir.create(outDirT)
 }
 
-#Function to add additional data to the metrics dataframe
-#Script-specific, do not port
-add.data.to.metric.df <- function(df, nm, layerNms) {
-  #Add region name & level to dataframe
-  df <- df |>
-    dplyr::mutate(region = nm,
-                  epaLevel = dplyr::case_when(region %in% nameJoin$us_l3nameclean ~ "epaL3",
-                                              region %in% nameJoin$us_l4l3name ~ "epaL4"))
-}
 
 
 #Function to run landscapemetrics::calculate_lsm and add the layer names
@@ -320,7 +321,7 @@ parallel.calculate.lsm.with.names <- function(land, ...) {
 #Script-specific, do not port
 add.region.to.metric.df <- function(df, nm) {
   #Add region name & level to dataframe
-  df <- df |>
+  out <- df |>
     dplyr::mutate(region = nm,
                   epaLevel = dplyr::case_when(region %in% nameJoin$us_l3nameclean ~ "epaL3",
                                               region %in% nameJoin$us_l4l3name ~ "epaL4"))
@@ -498,3 +499,6 @@ xx <- tt %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
 
 
 ```
+
+
+
