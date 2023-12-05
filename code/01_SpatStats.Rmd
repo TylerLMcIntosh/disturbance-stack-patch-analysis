@@ -242,8 +242,10 @@ careful.clip <- function(raster, vector) {
 careful.clip.set <- function(raster, vectors, namefield) {
   splitVec <- split(vectors, f=vectors[[namefield]])
   if (is(future::plan() ,"sequential")) {
+    print("Performing clip set in sequence")
     out <- splitVec |> purrr::map(careful.clip, raster = raster)
   } else { #Pack & parallelize
+    print("Performing clip set in parallel")
     r <- terra::wrap(raster)
     v <- splitVec |> 
       purrr::map(terra::vect) |> 
@@ -306,7 +308,7 @@ add.region.to.metric.df <- function(df, nm) {
 #This function is set up to run in parallel with the futureverse
 calculate.class.level.metrics <- function(landList) {
   if(is(future::plan(), "sequential")) {
-    print('Processing in sequence')
+    print('Calculating class level metrics in sequence')
       out <- landList |>
         purrr::map(calculate.lsm.with.names, #use version that includes raster layer names in output
                    what = c(
@@ -329,7 +331,7 @@ calculate.class.level.metrics <- function(landList) {
                    progress = TRUE,
                    full_name = TRUE)
   } else {
-    print('Processing in parallel')
+    print('Calculating class level metrics in parallel')
       out <- landList |>
         purrr::map(terra::wrap) |> #wrap each raster to send to node
         furrr::future_map(parallel.calculate.lsm.with.names, #use parallelized version that unwraps first
@@ -362,6 +364,7 @@ calculate.class.level.metrics <- function(landList) {
 #Function to calculate class-level metrics, add LSM names, and add contextual data over a named list of landscapes
 calculate.patch.level.metrics <- function(landList) {
   if(is(future::plan(), "sequential")) {
+    print('Calculating patch level metrics in sequence')
       out <- landList |>
         purrr::map(landscapemetrics::calculate.lsm.with.names,
                    what = "patch", #all patch metrics
@@ -370,6 +373,7 @@ calculate.patch.level.metrics <- function(landList) {
                    progress = TRUE,
                    full_name = TRUE)
   } else {
+    print('Calculating patch level metrics in parallel')
       out <- landList |>
         purrr::map(terra::wrap) |> #wrap each raster to send to node
         furrr::future_map(parallel.calculate.lsm.with.names, #use parallelized version that unwraps first
@@ -387,9 +391,9 @@ calculate.patch.level.metrics <- function(landList) {
 
 
 #Write out landscape metric CSVs
-write.land.metric.csv.w.name <- function(df, nm, dir) {
-  nmApp <- glue::glue("_{unique(df$level)}_{unique(df$epaLevel)}_")
-  flNm <- glue::glue("{nm}{nmApp}.csv")
+write.land.metric.csv.w.name <- function(df, nm, dir, set) {
+  nmApp <- glue::glue("_{unique(df$level)}_{unique(df$epaLevel)}")
+  flNm <- glue::glue("{set}_{nm}{nmApp}.csv")
   readr::write_csv(df, here::here(dir, flNm))
 }
 
@@ -410,7 +414,7 @@ write.land.metric.csv.w.name <- function(df, nm, dir) {
 # x <- t %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
 # 
 # xx <- tt %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
-# # xx %>% purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), nmApp = "_class_", dir = outDirT)
+ xx %>% purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = "Fire")
 
 
 
@@ -464,6 +468,65 @@ write.land.metric.csv.w.name <- function(df, nm, dir) {
 
 ```
 
+# Functions to read back in files and perform computations
+
+```{r}
+
+#A function to read in all csvs output with the same set name
+read.set.csvs.as.one <- function(setNm) {
+  fileList <- list.files(outDirT, pattern = glue::glue("^{setNm}"), full.names = TRUE)
+  csvs <- fileList |> purrr::map(read_csv)
+  oneTbl <- dplyr::bind_rows(csvs)
+  return(oneTbl)
+}
+
+
+```
+# Function to perform all operations on a given set
+
+```{r}
+
+#Function to bring all of the above functions together
+#This function requires a set name (setNm) as a string, which clarifies what the input raster represents (e.g. "Fire")
+calculate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
+  #If the aoi set is for epa l4 ecoregions, process appropriately and do both class and patch metrics
+  if("us_l4l3name" %in% names(aoiSet)) {
+    clippedRasterList <- careful.clip.set(raster, aoiSet, "us_l4l3name")
+    classMetrics <- clippedRasterList |>
+       calculate.class.level.metrics()
+    classMetrics %>%
+       purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
+    patchMetrics <- clippedRasterList |>
+       calculate.patch.level.metrics()
+    patchMetrics %>%
+       purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
+  } else { #If L3, only do class metrics
+    clippedRasterList <- careful.clip.set(raster, aoiSet, "us_l3nameclean")
+    classMetrics <- clippedRasterList |>
+       calculate.class.level.metrics()
+    classMetrics %>%
+       purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
+  }
+  asTbl <- read.set.csvs.as.one(setNm)
+  return(asTbl)
+}
+
+
+
+# #Clip
+# fireInsectTestList <- careful.clip.set(fireInsects, aoiL4Interest[1:2,], "us_l4l3name")
+# #Calculate metrics
+# classL4 <- fireInsectTestList |>
+#    calculate.class.level.metrics()
+# #write out
+# classL4 %>%
+#    purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = "FireInsect")
+# # Read in
+# z <- read.set.csvs.as.one("FireInsect")
+
+
+```
+
 # CORE CODE
 
 
@@ -496,34 +559,49 @@ forestL3Stats <- forestL4Stats |>
 rm(fMask, forestMaskL4, forestL4)
 ```
 
+# Run large functions
+
 ```{r}
 
 
+plan(multisession)
 
-#fireInsectInterestList <- careful.clip.set(fireInsects, aoiL3Interest, us_l3nameclean)
-
-
-test.future.function('careful.clip.set', fireInsects, aoiL4Interest[6:8,], "us_l4l3name")
-
-
-
-tic("sequential")
-fireInsectTestList <- careful.clip.set(fireInsects, aoiL4Interest[1:2,], "us_l4l3name")
-toc()
-
-
-
-fireTestList <- careful.clip.set(fireStack, aoiL4Interest[1:2,], "us_l4l3name")
+testOut <- calculate.raster.metrics.for.aoi.set(fireInsects, aoiL4Interest[1:2,], setNm = "FireInsects2")
 
 
 
 
-#Create level 4 class metric list
-classL4 <- fireInsectTestList |>
-  calculate.class.level.metrics()
-# #Write out
-# classL4 %>%
-#   purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT)
+
+
+
+
+
+
+# 
+# #fireInsectInterestList <- careful.clip.set(fireInsects, aoiL3Interest, us_l3nameclean)
+# 
+# 
+# test.future.function('careful.clip.set', fireInsects, aoiL4Interest[6:8,], "us_l4l3name")
+# 
+# 
+# 
+# tic("sequential")
+# fireInsectTestList <- careful.clip.set(fireInsects, aoiL4Interest[1:2,], "us_l4l3name")
+# toc()
+# 
+# 
+# 
+# fireTestList <- careful.clip.set(fireStack, aoiL4Interest[1:2,], "us_l4l3name")
+# 
+# 
+# 
+# 
+# #Create level 4 class metric list
+# classL4 <- fireInsectTestList |>
+#   calculate.class.level.metrics()
+# # #Write out
+# # classL4 %>%
+# #   purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT)
 
 
 
