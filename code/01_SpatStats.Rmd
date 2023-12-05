@@ -18,7 +18,7 @@ rm(list=ls()) #Ensure empty workspace if running from beginning
 #####EVERYTHING HERE SHOULD BE SET MANUALLY######
 #################################################
 
-computing <- "cyverse" #Sets computing location and file setup; "cyverse" or "local"
+computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
 rstudio <- TRUE #Sets whether or not the script is being used in RStudio or not; important for CyVerse processing; TRUE or FALSE
 parallelFuture <- TRUE #Sets whether or not parallel computing is used; TRUE or FALSE 
 aoiL3Names <- c("Southern Rockies") #The names of the EPA Level 3 ecoregions of interest, may be any length
@@ -569,6 +569,7 @@ forestL3Stats <- forestL4Stats |>
 
 #Remove un-needed objects
 rm(fMask, forestMaskL4, forestL4)
+gc()
 ```
 
 # Run large functions
