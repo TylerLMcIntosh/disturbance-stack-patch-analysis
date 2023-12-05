@@ -18,12 +18,15 @@ rm(list=ls()) #Ensure empty workspace if running from beginning
 #####EVERYTHING HERE SHOULD BE SET MANUALLY######
 #################################################
 
-computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
+computing <- "cyverse" #Sets computing location and file setup; "cyverse" or "local"
 rstudio <- TRUE #Sets whether or not the script is being used in RStudio or not; important for CyVerse processing; TRUE or FALSE
 parallelFuture <- TRUE #Sets whether or not parallel computing is used; TRUE or FALSE 
-aoiL3Names <- c("Sierra Nevada", "Middle Rockies", "Idaho Batholith","Southern Rockies") #The names of the EPA Level 3 ecoregions of interest, may be any length
+aoiL3Names <- c("Southern Rockies") #The names of the EPA Level 3 ecoregions of interest, may be any length
 edgeDepth <- 200 #in meters
 resolution <- 30 #in meters
+
+#aoiL3Names <- c("Sierra Nevada", "Middle Rockies", "Idaho Batholith","Southern Rockies") #The names of the EPA Level 3 ecoregions of interest, may be any length
+
 
 #NOTE: THIS LINE MUST BE RUN BEFORE LOADING ANY LIBRARIES TO MAKE GEOSPATIAL PROJECTIONS WORK PROPERLY IN R STUDIO ON CYVERSE!
 if(computing == "cyverse" & rstudio) {
@@ -56,10 +59,10 @@ list.of.packages <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr
 #Install all packages that aren't installed yet
 install.packages(setdiff(list.of.packages, rownames(installed.packages())))
 
-#Force install raster if on cyverse, since old version is installed
-if(computing == "cyverse") {
-  install.packages("raster")
-}
+# #Force install raster if on cyverse, since old version is installed
+# if(computing == "cyverse") {
+#   install.packages("raster")
+# }
 
 #Load all packages
 invisible(lapply(list.of.packages, library, character.only = TRUE)) #use 'invisible' to prevent output being displayed
@@ -153,6 +156,7 @@ if(computing == "local") {
   fireInsects <- terra::rast("~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/nathan_outputs/fire_and_insects.tif")
   fireStack <- terra::rast("~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/derived/fire_dist_stack_west.tif")
   #Load forest
+  insectStack <- terra::rast("~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/derived/insect_dist_stack_west.tif")
   fMask <- terra::rast(here::here('~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/raw/landfire-bps-derived-forest-mask.tif'))
 }
 
@@ -268,10 +272,18 @@ careful.clip.set <- function(raster, vectors, namefield) {
 ```{r}
 
 #Set outdirectory
-outDirT <- here("data", "derived", "metric_tables")
-if (!dir.exists(outDirT)){
-  dir.create(outDirT)
+if(computing == "local") {
+  outDirT <- here::here("data", "derived", "metric_tables")
+  if (!dir.exists(outDirT)){
+    dir.create(outDirT)
+  }
+} else if(computing == "cyverse") {
+  outDirT <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/metric_tables"
+  if (!dir.exists(outDirT)){
+    dir.create(outDirT)
+  }
 }
+
 
 
 
@@ -414,7 +426,7 @@ write.land.metric.csv.w.name <- function(df, nm, dir, set) {
 # x <- t %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
 # 
 # xx <- tt %>% purrr::map2(.f = add.data.to.metric.df, .y = names(.))
- xx %>% purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = "Fire")
+ # xx %>% purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = "Fire")
 
 
 
@@ -536,7 +548,7 @@ calculate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
 
 
 #Clip and mask to EPA L4 areas
-forestMaskL4 <- careful.clip.set(fMask, aoiL4Interest[1:2,], "us_l4l3name")
+forestMaskL4 <- careful.clip.set(fMask, aoiL4Interest, "us_l4l3name")
 
 
 #Get the number of forested pixels
@@ -564,7 +576,6 @@ rm(fMask, forestMaskL4, forestL4)
 ```{r}
 
 
-plan(multisession)
 
 testOut <- calculate.raster.metrics.for.aoi.set(fireInsects, aoiL4Interest[1:2,], setNm = "FireInsects2")
 
