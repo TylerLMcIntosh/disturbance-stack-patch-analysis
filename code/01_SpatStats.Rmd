@@ -1,4 +1,4 @@
-Run basic spatial statistics on disturbance stack
+Run spatial statistics on disturbance stack
 
 Tyler L. McIntosh
 CU Boulder CIRES Earth Lab
@@ -25,12 +25,13 @@ aoiL3Names <- c("Sierra Nevada", "Middle Rockies", "Idaho Batholith","Southern R
 edgeDepth <- 200 #in meters
 resolution <- 30 #in meters
 
+#NOTE: THIS LINE MUST BE RUN BEFORE LOADING ANY LIBRARIES TO MAKE GEOSPATIAL PROJECTIONS WORK PROPERLY IN R STUDIO ON CYVERSE!
 if(computing == "cyverse" & rstudio) {
   Sys.setenv(PROJ_LIB="/opt/conda/envs/earth-analytics-python/share/proj")
 }
 
 ```
-
+# SETUP 
 #Load packages etc
 
 ```{r, echo = FALSE, warning = FALSE}
@@ -108,12 +109,14 @@ test.future.function <- function(fun, ...) {
   initialPlan <- future::plan()
   
   #Test sequential version
+  print("SEQUENCE")
   future::plan("sequential")
   tic(glue::glue('Time to run function {fun} in sequence'))
   sTest <- do.call(fun, list(...))
   toc()
   
   #Test parallel version
+  print("PARALLEL")
   future::plan("multisession", workers = nCores)
   tic(glue::glue('Time to run function {fun} in parallel'))
   pTest <- do.call(fun, list(...))
@@ -130,7 +133,6 @@ test.future.function <- function(fun, ...) {
 
 
 ```
-
 
 # Load data and manage data paths
 
@@ -195,19 +197,25 @@ aoiL4Interest <- epaL4 %>%
 
 ```
 
-# Create raster sets for AOIs
+# Functions to create raster sets for AOIs
 
 ```{r}
-
-#############NOTE###############
-#Took some time to try and parallelize this for future use; turns out that SpatVector & SpatRaster objects don't parallelize well; need to either create the object on the core, or wrap/unwrap the files.
-
-
 
 #Function to clip a raster to a vector, ensuring in same projection
 #Returns raster in original projection, but clipped and masked to vector
 careful.clip <- function(raster, vector) {
-  #raster <- terra::unwrap(raster) #If it's a wrapped raster for parallelizing, unwrap
+  pack <- FALSE
+  
+  #Unpack if parallelized
+  if(class(raster)[1] == "PackedSpatRaster") {
+    raster <- terra::unwrap(raster)
+    pack <- TRUE
+  }
+  if(class(vector)[1] == "PackedSpatVector") {
+    vector <- sf::st_as_sf(terra::unwrap(vector))
+  }
+  
+  #Perform operation
   if (sf::st_crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
     print("Projecting vector")
     vector <- sf::st_transform(vector, terra::crs(raster)) 
@@ -218,6 +226,11 @@ careful.clip <- function(raster, vector) {
   r <- terra::crop(raster,
                    vector,
                    mask = TRUE) #crop & mask
+  
+  #Repack if was packed coming in (i.e. parallelized)
+  if(pack) {
+    r <- terra::wrap(r)
+  }
   return(r)
 }
 
@@ -228,67 +241,27 @@ careful.clip <- function(raster, vector) {
 #Returns the set of rasters as a named list 
 careful.clip.set <- function(raster, vectors, namefield) {
   splitVec <- split(vectors, f=vectors[[namefield]])
-   # if (is(future::plan() ,"sequential")) {
+  if (is(future::plan() ,"sequential")) {
     out <- splitVec |> purrr::map(careful.clip, raster = raster)
-  # } else {
-  #   out <- splitVec |> furrr::future_map(careful.clip, raster = wrap(raster))
-  # }
+  } else { #Pack & parallelize
+    r <- terra::wrap(raster)
+    v <- splitVec |> 
+      purrr::map(terra::vect) |> 
+      purrr::map(terra::wrap)
+    out <- v |> furrr::future_map(careful.clip, raster = r)
+    out <- out |>
+      purrr::map(terra::unwrap)
+  }
   return(out)
 }
 
-#fireInsectInterestList <- careful.clip.set(fireInsects, aoiL3Interest, us_l3nameclean)
-
-#options(future.globals.onReference = "error")
-
-
-tic("sequential")
-fireInsectTestList <- careful.clip.set(fireInsects, aoiL4Interest[1:2,], "us_l4l3name")
-toc()
-fireTestList <- careful.clip.set(fireStack, aoiL4Interest[1:2,], "us_l4l3name")
-
-# plan(multisession, workers = nCores)
-# 
-# tic("parallel")
-# fireInsectInterestList2 <- careful.clip.set(fireInsects, aoiL4Interest[1:2,], "us_l4l3name")
-# toc()
-
-
-
-
 
 ```
 
 
-# Perform computations on forest mask layer to get per/forest stats
-
-```{r}
 
 
-#Clip and mask to EPA L4 areas
-forestMaskL4 <- careful.clip.set(fMask, aoiL4Interest[1:2,], "us_l4l3name")
-
-
-#Get the number of forested pixels
-forestL4 <- forestMaskL4 |>
-  lapply(FUN = function(x) {global(x, fun = "notNA")})
-
-#Clean up and join together with region name data
-forestL4Stats <- cbind(names(forestMaskL4),
-                bind_rows(forestL4)) |>
-  dplyr::rename(us_l4l3name = `names(forestMaskL4)`) |>
-  dplyr::mutate(forestAreaHa = notNA * 900 * .0001) |> #900m^2 / pixel, ha conversion .0001
-  dplyr::left_join(nameJoin, by = join_by(us_l4l3name))
-
-#Group stats from L4 to L3
-forestL3Stats <- forestL4Stats |>
-  dplyr::group_by(us_l3name, us_l3nameclean) |>
-  dplyr::summarize(forestAreaHa = sum(forestAreaHa))
-
-#Remove un-needed objects
-rm(fMask, forestMaskL4, forestL4)
-```
-
-Create csv files with data on landscape metrics for all regions in the AOI, EPA L4 & L3
+# Functions to create csv files with data on landscape metrics for all regions in the AOI, EPA L4 & L3
 
 ```{r}
 
@@ -377,8 +350,9 @@ calculate.class.level.metrics <- function(landList) {
                              'lsm_c_cohesion'), #aggregation of patches
                    directions = 8,
                    edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
-                   progress = TRUE,
-                   full_name = TRUE) 
+                   progress = TRUE) |>
+   purrr::map(dplyr::left_join, y = lsm_abbreviations_names, #NOTE: for some reason cyverse in parallel won't do full_names = TRUE in the function call, so have to do manually
+                        by = c("metric", "level"))
   }
   out <- out %>%
     purrr::map2(.f = add.region.to.metric.df, .y = names(.)) #Add more data using add.data.to.metric.df function
@@ -402,8 +376,9 @@ calculate.patch.level.metrics <- function(landList) {
                    what = "patch", #all patch metrics
                    directions = 8,
                    edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
-                   progress = TRUE,
-                   full_name = TRUE)
+                   progress = TRUE) |>
+   purrr::map(dplyr::left_join, y = lsm_abbreviations_names, #NOTE: for some reason cyverse in parallel won't do full_names = TRUE in the function call, so have to do manually
+                        by = c("metric", "level"))
   }
   out <- out %>%
     purrr::map2(.f = add.region.to.metric.df, .y = names(.)) #Add more data using add.data.to.metric.df function
@@ -420,18 +395,7 @@ write.land.metric.csv.w.name <- function(df, nm, dir) {
 
 
 
-#Create level 4 class metric list
-classL4 <- fireInsectTestList |>
-  calculate.class.level.metrics()
-# #Write out
-# classL4 %>%
-#   purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT)
-# 
-# 
-# 
-# 
-# 
-# 
+
 # 
 # 
 # 
@@ -500,5 +464,69 @@ classL4 <- fireInsectTestList |>
 
 ```
 
+# CORE CODE
+
+
+# Perform computations on forest mask layer to get per/forest stats
+
+```{r}
+
+
+#Clip and mask to EPA L4 areas
+forestMaskL4 <- careful.clip.set(fMask, aoiL4Interest[1:2,], "us_l4l3name")
+
+
+#Get the number of forested pixels
+forestL4 <- forestMaskL4 |>
+  lapply(FUN = function(x) {global(x, fun = "notNA")})
+
+#Clean up and join together with region name data
+forestL4Stats <- cbind(names(forestMaskL4),
+                bind_rows(forestL4)) |>
+  dplyr::rename(us_l4l3name = `names(forestMaskL4)`) |>
+  dplyr::mutate(forestAreaHa = notNA * 900 * .0001) |> #900m^2 / pixel, ha conversion .0001
+  dplyr::left_join(nameJoin, by = join_by(us_l4l3name))
+
+#Group stats from L4 to L3
+forestL3Stats <- forestL4Stats |>
+  dplyr::group_by(us_l3name, us_l3nameclean) |>
+  dplyr::summarize(forestAreaHa = sum(forestAreaHa))
+
+#Remove un-needed objects
+rm(fMask, forestMaskL4, forestL4)
+```
+
+```{r}
+
+
+
+#fireInsectInterestList <- careful.clip.set(fireInsects, aoiL3Interest, us_l3nameclean)
+
+
+test.future.function('careful.clip.set', fireInsects, aoiL4Interest[6:8,], "us_l4l3name")
+
+
+
+tic("sequential")
+fireInsectTestList <- careful.clip.set(fireInsects, aoiL4Interest[1:2,], "us_l4l3name")
+toc()
+
+
+
+fireTestList <- careful.clip.set(fireStack, aoiL4Interest[1:2,], "us_l4l3name")
+
+
+
+
+#Create level 4 class metric list
+classL4 <- fireInsectTestList |>
+  calculate.class.level.metrics()
+# #Write out
+# classL4 %>%
+#   purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT)
+
+
+
+```
 
 
