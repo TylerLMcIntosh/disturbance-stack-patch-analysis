@@ -1,0 +1,290 @@
+Get forest area in each L4 ecoregion on disturbance stack
+
+Tyler L. McIntosh
+CU Boulder CIRES Earth Lab
+Last updated: 12/18/23
+
+This script uses the following naming conventions wherever possible:
+ lowerCamelCase for variables
+ period.separated for functions
+ underscore_separated for files
+
+# SET GLOBAL PARAMETERS
+
+```{r}
+rm(list=ls()) #Ensure empty workspace if running from beginning
+
+#################################################
+#####EVERYTHING HERE SHOULD BE SET MANUALLY######
+#################################################
+
+computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
+rstudio <- TRUE #Sets whether or not the script is being used in RStudio or not; important for CyVerse processing; TRUE or FALSE
+
+
+#Set outdirectory
+if(computing == "local") {
+  outDirT <- here::here("data", "derived")
+  if (!dir.exists(outDirT)){
+    dir.create(outDirT)
+  }
+} else if(computing == "cyverse") {
+  outDirT <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/"
+  if (!dir.exists(outDirT)){
+    dir.create(outDirT)
+  }
+}
+
+
+# #NOTE: THIS LINE MUST BE RUN BEFORE LOADING ANY LIBRARIES TO MAKE GEOSPATIAL PROJECTIONS WORK PROPERLY IN R STUDIO ON CYVERSE!
+if(computing == "cyverse" & rstudio) {
+  Sys.setenv(PROJ_LIB="/opt/conda/envs/macrosystems/share/proj")
+}
+
+```
+# SETUP 
+#Load packages etc
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# SETUP ----
+## Libraries ----
+
+#Check the required libraries and download if needed
+list.of.packages <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr, forcats
+                      "terra", #New raster data package, documentation pdf here: https://cran.r-project.org/web/packages/terra/terra.pdf
+                      "future", "future.apply", "furrr", "doFuture", "progressr", #Futureverse! https://www.futureverse.org/packages-overview.html; https://henrikbengtsson.github.io/course-stanford-futureverse-2023/
+                      "sf", #New vector data package
+                      #"mapview", #For quick interactive mapping
+                      "here", #Relative path best practices
+                      "landscapemetrics",  #Fragstats for R
+                      "tictoc", #time running of processes
+                      "tmap",
+                      "purrr",
+                      "units",
+                      "tigris", #census data
+                      "glue", #easy strings
+                      "remotes", #to access github libraries
+                      "ggpmisc") #For adding R^2 to plots
+
+#Install all packages that aren't installed yet
+install.packages(setdiff(list.of.packages, rownames(installed.packages())))
+
+#Load all packages
+invisible(lapply(list.of.packages, library, character.only = TRUE)) #use 'invisible' to prevent output being displayed
+#If this line throws an error on cyverse, close R session and re-open
+
+#Install ecoregions package from github if needed, then load package
+if(!"ecoregions" %in% rownames(installed.packages())) {
+  remotes::install_github("tomroh/ecoregions")
+}
+library(ecoregions)
+
+
+## Clean workspace & set up environment ----
+here::here() #Check here location
+here::i_am("code/00_ForestStats.Rmd")
+#OR
+#setwd() #Set working directory directly
+options(digits = 6) #Set standard decimal print output
+options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
+```
+
+# Load data and manage data paths
+
+```{r, echo = FALSE}
+#Load data
+
+if(computing == "local") {
+  #Load forest
+  fMask <- terra::rast(here::here('data', 'raw', 'landfire-bps-derived-forest-mask.tif'))
+} else if(computing == "cyverse") {
+  #Load forest
+  fMask <- terra::rast(here::here('~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/raw/landfire-bps-derived-forest-mask.tif'))
+}
+
+#Load EPA ecoregion data from ecoregions package
+epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
+  sf::st_transform(terra::crs(fMask))
+epaL4 <- ecoregions::ContinentalUsEcoregion4 %>% 
+  sf::st_transform(terra::crs(fMask))
+
+  
+#EPA ecoregion distinct name table for joins
+nameJoin <- cbind(epaL4$us_l4name, 
+                  gsub(" ", "", epaL4$us_l4name),
+                  epaL4$us_l3name,
+                  gsub(" ", "", epaL4$us_l3name)) %>% 
+  `colnames<-`(c('us_l4name', 'us_l4nameclean', 'us_l3name', 'us_l3nameclean')) %>%
+  as.data.frame() %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(us_l4l3name = glue::glue("{us_l4nameclean}{us_l3nameclean}"))
+
+```
+
+# Set the areas of interest
+
+```{r}
+
+#Pull in state data as context
+usa <- tigris::states() |>
+  sf::st_transform(terra::crs(fMask))
+west <- usa[usa$STUSPS %in% c("WA", "OR", "CA", "ID", "MT", "WY", "NV", "AZ", "CO", "NM", "UT"),] 
+
+#EPA level 3 AOI
+aoiL3Interest <- epaL3 |>
+  dplyr::group_by(us_l3name) |>
+  dplyr::summarize(geometry = st_union(geometry)) |>
+  dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name)) |>
+  sf::st_filter(west)
+
+#EPA level 4 AOI, only including L4 ecoregions in the L3 ecoregions of interest
+aoiL4Interest <- epaL4 |>
+  group_by(us_l4name, us_l3name) |>
+  summarize(geometry = st_union(geometry)) |>
+  left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
+  dplyr::filter(us_l3name %in% aoiL3Interest$us_l3name)
+
+
+```
+
+# Perform computations on forest mask layer to get per/forest stats
+
+```{r}
+
+#This function takes in a set of polygons and returns the same set of polygons with the area of the polygon added as a column called "stArea", in whatever units the CRS is in
+st.area.to.poly <- function(polys) {
+  out <- polys |>
+    sf::st_area() |> #get area from sf package
+    units::drop_units() %>%
+    cbind(polys, .) |> #join to polygons
+    dplyr::rename(stArea = `.`) #rename
+  return(out)
+}
+
+
+#Get total area of each L4 zone of interest
+aoiL4Interest <- aoiL4Interest |>
+  st.area.to.poly() |>
+  dplyr::mutate(areaHa = stArea * 0.0001) #Convert to be hectares
+
+#REMOVE WHEN READY FOR FULL RUN!!
+aoiL4Interest <- aoiL4Interest[1:2,]
+
+#Get zonal stats
+forestL4 <- fMask |>
+  terra::zonal(z = terra::vect(aoiL4Interest), fun = "sum", na.rm = TRUE, touches = FALSE)
+
+#Create dataframes
+forestL4Stats <- forestL4 |>
+  cbind(aoiL4Interest$us_l4l3name, aoiL4Interest$areaHa) |>
+  `names<-`(c("forestPix", "us_l4l3name", "areaHa")) |>
+  dplyr::mutate(forestAreaHa = forestPix * 900 * 0.0001, #900m^2 / pixel, ha conversion .0001
+                percForest = 100* (forestAreaHa / areaHa)) |> 
+  dplyr::left_join(nameJoin, by = join_by(us_l4l3name))
+
+forestL3Stats <- forestL4Stats |>
+  dplyr::group_by(us_l3name, us_l3nameclean) |>
+  dplyr::summarise(forestPix = sum(forestPix),
+                   forestAreaHa = sum(forestAreaHa),
+                   areaHa = sum(areaHa)) |>
+  dplyr::mutate(percForest = 100* (forestAreaHa / areaHa))
+
+
+if(computing == "local") {
+  readr::write_csv(forestL4Stats, here::here('data', 'derived', 'forest_l4_dats.csv'))
+  readr::write_csv(forestL3Stats, here::here('data', 'derived', 'forest_l3_dats.csv'))
+} else if(computing == "cyverse") {
+  readr::write_csv(forestL4Stats, '~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/derived/forest_l4_dats.csv')
+  readr::write_csv(forestL3Stats, '~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/derived/forest_l3_dats.csv')
+}
+
+
+
+
+
+# 
+# #Function to clip a raster to a vector, ensuring in same projection
+# #Returns raster in original projection, but clipped and masked to vector
+# careful.clip <- function(raster, vector) {
+#   pack <- FALSE
+#   
+#   #Unpack if parallelized
+#   if(class(raster)[1] == "PackedSpatRaster") {
+#     raster <- terra::unwrap(raster)
+#     pack <- TRUE
+#   }
+#   if(class(vector)[1] == "PackedSpatVector") {
+#     vector <- sf::st_as_sf(terra::unwrap(vector))
+#   }
+#   
+#   #Perform operation
+#   if (sf::st_crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
+#     print("Projecting vector")
+#     vector <- sf::st_transform(vector, terra::crs(raster)) 
+#   } else {
+#     print("Vector already in raster CRS")
+#   }
+#   print("Clipping")
+#   r <- terra::crop(raster,
+#                    vector,
+#                    mask = TRUE) #crop & mask
+#   
+#   #Repack if was packed coming in (i.e. parallelized)
+#   if(pack) {
+#     r <- terra::wrap(r)
+#   }
+#   return(r)
+# }
+# 
+# 
+# #Function to clip a raster to a set of polygons (one clip per polygon in set),
+# #ensuring they are in the same projection
+# #Namefield indicates the field to use to name the item in the returned list (e.g. "us_l4l3name")
+# #Returns the set of rasters as a named list 
+# careful.clip.set <- function(raster, vectors, namefield) {
+#   splitVec <- split(vectors, f=vectors[[namefield]])
+#   if (is(future::plan() ,"sequential")) {
+#     print("Performing clip set in sequence")
+#     out <- splitVec |> purrr::map(careful.clip, raster = raster)
+#   } else { #Pack & parallelize
+#     print("Performing clip set in parallel")
+#     r <- terra::wrap(raster)
+#     v <- splitVec |> 
+#       purrr::map(terra::vect) |> 
+#       purrr::map(terra::wrap)
+#     out <- v |> furrr::future_map(careful.clip, raster = r)
+#     out <- out |>
+#       purrr::map(terra::unwrap)
+#   }
+#   return(out)
+# }
+# 
+# #Clip and mask to EPA L4 areas
+# forestMaskL4 <- careful.clip.set(fMask, aoiL4Interest, "us_l4l3name")
+# #toc()
+# 
+# 
+# #Get the number of forested pixels
+# forestL4 <- forestMaskL4 |>
+#   lapply(FUN = function(x) {global(x, fun = "notNA")})
+# 
+# #Clean up and join together with region name data
+# forestL4Stats <- cbind(names(forestMaskL4),
+#                 bind_rows(forestL4)) |>
+#   dplyr::rename(us_l4l3name = `names(forestMaskL4)`) |>
+#   dplyr::mutate(forestAreaHa = notNA * 900 * .0001) |> #900m^2 / pixel, ha conversion .0001
+#   dplyr::left_join(nameJoin, by = join_by(us_l4l3name))
+# 
+# #Group stats from L4 to L3
+# forestL3Stats <- forestL4Stats |>
+#   dplyr::group_by(us_l3name, us_l3nameclean) |>
+#   dplyr::summarize(forestAreaHa = sum(forestAreaHa))
+# 
+# #Remove un-needed objects
+# rm(fMask, forestMaskL4, forestL4)
+# gc()
+```
+
+
+
+

@@ -28,16 +28,30 @@ resolution <- 30 #in meters
 #aoiL3Names <- c("Sierra Nevada", "Middle Rockies", "Idaho Batholith","Southern Rockies") #The names of the EPA Level 3 ecoregions of interest, may be any length
 
 
-#NOTE: THIS LINE MUST BE RUN BEFORE LOADING ANY LIBRARIES TO MAKE GEOSPATIAL PROJECTIONS WORK PROPERLY IN R STUDIO ON CYVERSE!
+#Set outdirectory
+if(computing == "local") {
+  outDirT <- here::here("data", "derived", "metric_tables")
+  if (!dir.exists(outDirT)){
+    dir.create(outDirT)
+  }
+} else if(computing == "cyverse") {
+  outDirT <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/metric_tables"
+  if (!dir.exists(outDirT)){
+    dir.create(outDirT)
+  }
+}
+
+
+# #NOTE: THIS LINE MUST BE RUN BEFORE LOADING ANY LIBRARIES TO MAKE GEOSPATIAL PROJECTIONS WORK PROPERLY IN R STUDIO ON CYVERSE!
 if(computing == "cyverse" & rstudio) {
-  Sys.setenv(PROJ_LIB="/opt/conda/envs/earth-analytics-python/share/proj")
+  Sys.setenv(PROJ_LIB="/opt/conda/envs/macrosystems/share/proj")
 }
 
 ```
 # SETUP 
 #Load packages etc
 
-```{r, echo = FALSE, warning = FALSE}
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
 # SETUP ----
 ## Libraries ----
 
@@ -92,7 +106,7 @@ options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
 nCores <- future::availableCores()
 if(nCores > 120) {
   nCores <- 120
-}else{
+} else {
   nCores <- nCores - 1
 }
 
@@ -144,20 +158,13 @@ test.future.function <- function(fun, ...) {
 
 if(computing == "local") {
   fileLocation <- here::here('data', 'nathan_outputs')
-
-  fireInsects <- terra::rast(here::here(fileLocation, "fire_and_insects2.tif"))
-  #fireStack <- terra::rast(here::here(fileLocation, "fire_stack.tif"))
-  
+  fireInsects <- terra::rast(here::here(fileLocation, "fire_and_insects.tif"))
   fireStack <- terra::rast(here::here('data', 'derived', 'fire_dist_stack_west.tif'))
-  #Load forest
-  fMask <- terra::rast(here::here('data', 'raw', 'landfire-bps-derived-forest-mask.tif'))
-
 } else if(computing == "cyverse") {
   fireInsects <- terra::rast("~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/nathan_outputs/fire_and_insects.tif")
   fireStack <- terra::rast("~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/derived/fire_dist_stack_west.tif")
-  #Load forest
   insectStack <- terra::rast("~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/derived/insect_dist_stack_west.tif")
-  fMask <- terra::rast(here::here('~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/raw/landfire-bps-derived-forest-mask.tif'))
+
 }
 
 
@@ -270,22 +277,6 @@ careful.clip.set <- function(raster, vectors, namefield) {
 # Functions to create csv files with data on landscape metrics for all regions in the AOI, EPA L4 & L3
 
 ```{r}
-
-#Set outdirectory
-if(computing == "local") {
-  outDirT <- here::here("data", "derived", "metric_tables")
-  if (!dir.exists(outDirT)){
-    dir.create(outDirT)
-  }
-} else if(computing == "cyverse") {
-  outDirT <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/metric_tables"
-  if (!dir.exists(outDirT)){
-    dir.create(outDirT)
-  }
-}
-
-
-
 
 #Function to run landscapemetrics::calculate_lsm and add the layer names
 calculate.lsm.with.names <- function(land, ...) {
@@ -540,37 +531,6 @@ calculate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
 ```
 
 # CORE CODE
-
-
-# Perform computations on forest mask layer to get per/forest stats
-
-```{r}
-
-
-#Clip and mask to EPA L4 areas
-forestMaskL4 <- careful.clip.set(fMask, aoiL4Interest, "us_l4l3name")
-
-
-#Get the number of forested pixels
-forestL4 <- forestMaskL4 |>
-  lapply(FUN = function(x) {global(x, fun = "notNA")})
-
-#Clean up and join together with region name data
-forestL4Stats <- cbind(names(forestMaskL4),
-                bind_rows(forestL4)) |>
-  dplyr::rename(us_l4l3name = `names(forestMaskL4)`) |>
-  dplyr::mutate(forestAreaHa = notNA * 900 * .0001) |> #900m^2 / pixel, ha conversion .0001
-  dplyr::left_join(nameJoin, by = join_by(us_l4l3name))
-
-#Group stats from L4 to L3
-forestL3Stats <- forestL4Stats |>
-  dplyr::group_by(us_l3name, us_l3nameclean) |>
-  dplyr::summarize(forestAreaHa = sum(forestAreaHa))
-
-#Remove un-needed objects
-rm(fMask, forestMaskL4, forestL4)
-gc()
-```
 
 # Run large functions
 
