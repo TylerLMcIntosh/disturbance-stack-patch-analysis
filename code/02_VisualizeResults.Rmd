@@ -1,0 +1,672 @@
+Analyze and visualize outputs from scripts 00 & 01
+
+Tyler L. McIntosh
+CU Boulder CIRES Earth Lab
+Last updated: 12/21/23
+
+This script uses the following naming conventions wherever possible:
+ lowerCamelCase for variables
+ period.separated for functions
+ underscore_separated for files
+
+
+# Set libraries
+
+```{r}
+
+#Select library chunks from R_Libraries.txt and add to "list.of.packages"
+
+######Utility libraries
+utility <- c(
+ 	"tictoc", #benchmarking
+	"beepr", # beep() will make a noise. options(error = beep) will beep on any errors
+	"zip", #For zipping files (does not require external tools). mode = "cherry-pick" to select specific files w/o mirroring directory structure
+	"units", #for managing units
+	"remotes", #to access github
+	"here", #Relative path best practices
+	"profvis" #Profiling of code for efficiency and identifying bottlenecks
+)
+
+
+#####Data management libraries
+dataManagement <- c(
+	"tidyverse", #Includes: dplyr, forcats, ggplot2, lubridate, purrr, readr, stringr, tibble, tidyr
+	"glue", #Easy string management
+	"data.table" #More efficient dataframes and csv read/write
+)
+
+######GitHub libraries - any library from GitHub that needs to be installed via 'remotes'
+github <- c(
+	"tomroh/ecoregions" #pull EPA ecoregion polygons
+)
+
+
+#####Visualization libraries
+viz <- c(
+	"ggplot2",
+	#"ggmisc", #various helpful tools, e.g. adding R^2 to plots
+	"scales", #easily add commas to visualizations
+	"gridExtra", #Multiframe plots option
+	"patchwork", #Extends use of ggplot2 for multi-plot layout
+	"kableExtra", #Table creation
+	"RColorBrewer", #color palettes.
+  # + scale_fill_brewer() for box plot, bar plot, violin plot, dot plot, etc
+  # + scale_color_brewer() for lines and points
+	"ggthemes", #Themes for ggplot2 package
+	"lattice", #Easy visualization of multidimensional data, e.g. scatterplot matrix: splom()
+	"scatterplot3d" #Visualization of three-dimensional point cloud. Example below:
+	#prepare 3-D scatterplot
+	#s3d <-with(trees, scatterplot3d(Girth, Height, Volume, pch=16, highlight.3d = TRUE, angle=60))
+	#fit <-lm(Volume ~ Girth + Height, data  =trees) # MLR regression model
+	#s3d$plane3d(fit) #produce 3-D plot/ of "best fit" plane through the 3D scatterplot
+)
+
+#####Geographic visualization
+geographicViz <- c(
+	"mapview", #quick interactive mapping
+	"tmap", #Thematic mapping
+	"tmaptools", #Supports tmap
+	"leaflet" #For interactive web mapping
+)
+
+
+#ADD LIBRARY CHUNKS HERE
+list.of.packages <- c(utility, dataManagement, github, viz, geographicViz)
+
+```
+
+
+
+# Setup libraries & workspace
+
+```{r}
+
+#Install all CRAN packages that aren't installed yet
+install.packages(setdiff(list.of.packages, rownames(installed.packages())))
+
+#Install all packages from GitHub (if any) using remotes package that aren't installed yet
+if(exists("github")) { #If there are github-dependant packages...
+  library(remotes) #load remotes package
+  for(package in github) {
+    if(! package %in% rownames(installed.packages())) {
+      remotes::install_github(package) #Install package
+    }
+  }
+}
+
+#Replace GitHub package names in list.of.packages with the actual name of the package to load
+github_names <- sub(".*/", "", github)  # Extract names after "/"
+list.of.packages <- gsub(paste(github, collapse = "|"), github_names, list.of.packages)
+
+#Load all packages
+invisible(lapply(list.of.packages, library, character.only = TRUE)) #use 'invisible' to prevent output being displayed
+
+
+# Clean workspace & set up environment
+here::here() #Check here location
+here::i_am("code/01_SpatStats.Rmd")
+#OR
+#setwd() #Set working directory directly
+options(digits = 6) #Set standard decimal print output
+options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
+
+```
+
+# Create necessary directories - delete any unnecessary
+
+```{r}
+# Figures directory
+figsDir <- here::here("figs")
+if (!dir.exists(figsDir)){
+  dir.create(figsDir)
+}
+
+#Derived data directory
+datDerDir <- here::here("data/derived")
+if (!dir.exists(datDerDir)){
+  dir.create(datDerDir)
+}
+
+```
+
+
+# Read in data
+
+```{r}
+
+
+#A function to get all of the sets that have been generated
+fetch.sets <- function(dir) {
+  fileList <- list.files(dir, pattern = ".csv", full.names = FALSE)
+  setNms <- lapply(fileList, function(fl){stringr::str_split(fl, "_") |> dplyr::first() |> dplyr::first()})
+  return(unique(setNms))
+}
+
+#A function to read in all csvs output with the same set name
+read.set.csvs.as.one <- function(setNm, dir) {
+  fileList <- list.files(dir, pattern = glue::glue("^{setNm}_"), full.names = TRUE)
+  csvs <- fileList |> purrr::map(read_csv)
+  oneTbl <- dplyr::bind_rows(csvs)
+  return(oneTbl)
+}
+
+#A function to read all sets stored in a directory into combined dataframes, using the prior two functions
+#Will return a list of all sets in the directory
+read.in.all.sets <- function(dir) {
+  setNms <- fetch.sets(dir)
+  sets <- lapply(setNms, read.set.csvs.as.one, dir = here::here('data', 'derived', 'metric_tables'))
+  names(sets) <- setNms
+  return(sets)
+}
+
+#READ IN SPATSTATS OUTPUT
+allDat <- read.in.all.sets(here::here('data', 'derived', 'metric_tables'))
+
+
+#Load EPA ecoregion data from ecoregions package
+epaL3 <- ecoregions::ContinentalUsEcoregion3
+epaL4 <- ecoregions::ContinentalUsEcoregion4
+
+  
+#EPA ecoregion distinct name table for joins (from script 00_ForestStats.rmd)
+nameJoin <- read_csv(here::here('data', 'derived', "epal3l4_name_join.csv"))
+
+
+
+```
+
+# Split into data from single and multi-layer rasters; visualize differently
+
+```{r}
+
+# A function to test the number of layers in each dataset and return the type specified
+#dats should be a dataset read in by read.in.all.sets 
+#type should be a character string of either "single" or "multi"
+test.dat.layers <- function(dats, type) {
+  singleLayerOrNot <- lapply(dats, FUN = function(x) {length(unique(x$layerName)) == 1})
+  singleLayerInd <- which(singleLayerOrNot == TRUE)
+  multiLayerInd <- which(singleLayerOrNot == FALSE)
+  if(type == "single") {
+    return(dats[singleLayerInd])
+  } else if(type == "multi") {
+    return(dats[multiLayerInd])
+  } else {
+    stop("'type' parameter must be either 'multi' or 'single' as a string")
+  }
+}
+
+#Use test.dat.layers to split into single and multi-layer data
+singleLayerDats <- test.dat.layers(allDat, type = "single")
+multiLayerDats <- test.dat.layers(allDat, type = "multi")
+
+```
+
+
+# Visualize!
+
+```{r}
+
+
+```
+
+# FROM HERE DOWN IS OLD CODE PULLED FROM ANOTHER SCRIPT - TO ADAPT
+
+
+plot the metrics:
+-merge the outputs into one dataframe for each metric set
+-bar plot of 
+
+AREA
+
+NUMBER OF PATCHES
+
+PATCH AREA MEAN & MEDIAN
+
+PATCH CORE AREA
+
+ED: Area-weighted edge density. The metric describes the configuration of the
+landscape, e.g. because an aggregation of the same class will result in a low edge density. The metric is standardized to the total landscape area, and therefore comparisons among landscapes with different total areas are possible. Increases from 0, ED=0 if only one patch
+
+SHAPE: Shape metric. Equals SHAPE_MN = 0 if all patches are squares. Increases, without limit, as the shapes of patches become more complex. (better than perimiter-area ratios)
+
+CONTIG: Shape metric. Equals the mean of the contiguity index on class level for all patches.  Asses the spatial connectedness (contiguity) of cells in patches. Ranges from 0 to 1
+
+COHESION: COHESION is an ’Aggregation metric’. It characterises the connectedness of patches belonging to
+class i. It can be used to asses if patches of the same class are located aggregated or rather isolated
+and thereby COHESION gives information about the configuration of the landscape. Approaches COHESION = 0 if patches of class i become more isolated. Increases
+if patches of class i become more aggregated.
+
+
+
+```{r}
+
+tblDir <- here::here('data', 'intermediate', 'l4_tbl')
+
+cTbls <- list.files(here::here(tblDir, 'class_metrics'), pattern = ".csv", full.names = TRUE)
+pTbls <- list.files(here::here(tblDir, 'patch_metrics'), pattern = ".csv", full.names = TRUE)
+
+classStats <- lapply(cTbls, function(f){read.csv(f)}) %>% 
+  bind_rows() %>%
+  filter(class == 1)
+woNmC <- classStats %>%
+  filter(is.na(US_L3NAME)) %>%
+  select(-US_L3NAME) %>%
+  left_join(nameJoin)
+classStats <- classStats %>%
+  filter(!is.na(US_L3NAME)) %>%
+  rbind(woNmC) %>%
+  filter(US_L3NAME != "Northern Basin and Range") %>%
+  mutate(US_L3NAME = factor(US_L3NAME, level = c('Middle Rockies',
+                                                 'Southern Rockies',
+                                                 'Idaho Batholith',
+                                                 'Sierra Nevada')))
+
+patchStats <- lapply(pTbls, function(f){read.csv(f)}) %>% 
+  bind_rows() %>%
+  filter(class == 1)
+woNmP <- patchStats %>%
+  filter(is.na(US_L3NAME)) %>%
+  select(-US_L3NAME) %>%
+  left_join(nameJoin)
+patchStats <- patchStats %>%
+  filter(!is.na(US_L3NAME)) %>%
+  rbind(woNmP) %>%
+  filter(US_L3NAME != "Northern Basin and Range") %>%
+  mutate(US_L3NAME = factor(US_L3NAME, level = c('Middle Rockies',
+                                                 'Southern Rockies',
+                                                 'Idaho Batholith',
+                                                 'Sierra Nevada')))
+
+
+```
+
+```{r}
+#PATCH STATS
+
+ggplot(patchStats, aes(x = flNm, y = value, fill = US_L3NAME)) +
+  geom_boxplot() +
+  facet_wrap(~name, scales = "free") +
+  stat_summary(fun.y=mean, geom="point", shape=20, size=3, color="black", fill="black")
+
+ggplot(patchStats %>% filter(name == "patch area" | name == "core area"), aes(x = flNm, y = value)) +
+  geom_boxplot(aes(color = US_L3NAME)) +
+  facet_wrap(~name) +
+  stat_summary(fun.y=mean, geom="point", shape=20, size=3, color="black", fill="black") +
+  coord_cartesian(xlim = NULL, ylim = (c(0, 250))) +
+  labs(title = "Patch Areas")
+
+ggplot(patchStats %>% filter(name == "core area index"), aes(x = flNm, y = value)) +
+  geom_boxplot(aes(color = US_L3NAME)) +
+  stat_summary(fun.y=mean, geom="point", shape=20, size=3, color="black", fill="black") +
+  labs(title = "Core area index")
+
+ggplot(patchStats %>% filter(name == "shape index"), aes(x = flNm, y = value)) +
+  geom_boxplot(aes(color = US_L3NAME)) +
+  stat_summary(fun.y=mean, geom="point", shape=20, size=3, color="black", fill="black") +
+  labs(title = "Shape index")
+
+#CLASS STATS
+
+ggplot(classStats) +
+  geom_col(aes(x = flNm, y = value, fill = US_L3NAME)) +
+  facet_wrap(~name, scales = "free")
+
+ggplot(classStats %>% filter(name == "largest patch index")) +
+  geom_col(aes(x = flNm, y = value, fill = US_L3NAME)) +
+  facet_wrap(~name, scales = "free")
+
+ggplot(classStats %>% filter(name == "largest patch index"), aes(x = US_L3NAME, y = value)) +
+  geom_boxplot(aes(color = US_L3NAME)) +
+  stat_summary(fun.y=mean, geom="point", shape=20, size=3, color="black", fill="black") +
+  coord_cartesian(xlim = NULL, ylim = (c(0, 1))) +
+  labs(title = "Largest patch index")
+
+ggplot(classStats %>% filter(name == "core area percentage of landscape")) +
+  geom_col(aes(x = flNm, y = value, fill = US_L3NAME)) +
+  facet_wrap(~name, scales = "free")
+
+
+
+#number of patches / area
+
+
+
+ggplot(patchStats, aes(x = US_L3NAME, y = value, fill = US_L3NAME)) +
+  geom_boxplot() +
+  facet_wrap(~name, scales = "free") +
+  stat_summary(fun.y=mean, geom="point", shape=20, size=3, color="black", fill="black") +
+  labs(title = "PatchStats All")
+
+ggplot(classStats, aes(x = US_L3NAME, y = value, fill = US_L3NAME)) +
+  geom_boxplot() +
+  facet_wrap(~name, scales = "free") +
+  stat_summary(fun.y=mean, geom="point", shape=20, size=3, color="black", fill="black") +
+  labs(title = "ClassStats All")
+
+
+ggplot(patchStats %>% filter(name == "patch area" | name == "core area"), aes(x = US_L3NAME, y = value)) +
+  geom_boxplot(aes(color = US_L3NAME)) +
+  facet_wrap(~name) +
+  stat_summary(fun.y=mean, geom="point", shape=20, size=3, color="black", fill="black") +
+  coord_cartesian(xlim = NULL, ylim = (c(0, 25))) +
+  labs(title = "Patch Areas") +
+  theme(axis.text.x=element_blank())
+ggsave(here::here('figs', 'patchAreasL3Lim.png'))
+
+
+ggplot(patchStats %>% filter(name == "patch area" | name == "core area"), aes(x = US_L3NAME, y = value)) +
+  geom_boxplot(aes(color = US_L3NAME)) +
+  facet_wrap(~name) +
+  stat_summary(fun.y=mean, geom="point", shape=20, size=3, color="black", fill="black") +
+#  coord_cartesian(xlim = NULL, ylim = (c(0, 2000))) +
+  labs(title = "Patch Areas") +
+  theme(axis.text.x=element_blank())
+ggsave(here::here('figs', 'patchAreasL3NoLim.png'))
+
+ggplot(patchStats %>% filter(name == "shape index"), aes(x = US_L3NAME, y = value)) +
+  geom_boxplot(aes(color = US_L3NAME)) +
+  stat_summary(fun.y=mean, geom="point", shape=20, size=3, color="black", fill="black") +
+  coord_cartesian(xlim = NULL, ylim = (c(0, 20))) +
+  labs(title = "Shape index")
+
+
+
+
+ggplot(patchStats %>% filter(name == "core area index"), aes(x = US_L3NAME, y = value)) +
+  geom_boxplot(aes(color = US_L3NAME)) +
+  stat_summary(fun.y=mean, geom="point", shape=20, size=3, color="black", fill="black") +
+  coord_cartesian(xlim = NULL, ylim = (c(0, 100))) +
+  labs(title = "Core area index")
+ggsave(here::here('figs', 'caIndexL3.png'))
+
+
+#Function to filter a dataframe to only include values >= the selected percentile in each group
+#Group is the column name to group by
+#Value is the column with the values to calculate percentiles of
+#Percentile is the percentile in the form e.g. 0.75
+filter_by_percentile <- function(data, group, value, percentile) {
+  result <- data %>%
+    group_by({{group}}) %>%
+    do(filter(., {{value}} >= quantile({{value}}, percentile))) %>%
+    ungroup()
+  return(result)
+}
+
+
+#Examine core area extremes
+
+percentiles <- c(.8, .85, .9, .95, .975, .99)
+
+patchAreaExtremes <- data.frame()
+
+for(p in percentiles) {
+  patchAreaFilt <- filter_by_percentile(data = patchStats %>% filter(name == "core area"),
+                                    group = US_L3NAME,
+                                    value = value,
+                                    percentile = p) %>%
+    mutate(Percent = p * 100)
+  patchAreaExtremes <- rbind(patchAreaExtremes, patchAreaFilt)
+}
+
+ggplot(patchAreaExtremes, aes(x = US_L3NAME,
+                          y = value)) +
+  geom_boxplot(aes(color = US_L3NAME)) +
+  stat_summary(fun = "mean", geom="point", shape=20, size=3, color="black", fill="black") +
+  facet_wrap(~Percent) +
+  labs(title = "Patch Core Area, top percentiles (no Y limit)") +
+  xlab("EPA Lvl 3 Ecoregion") +
+  theme(axis.text.x=element_blank())
+
+ggplot(patchAreaExtremes, aes(x = US_L3NAME,
+                          y = value)) +
+  geom_boxplot(aes(color = US_L3NAME)) +
+  stat_summary(fun = "mean", geom="point", shape=20, size=3, color="black", fill="black") +
+  facet_wrap(~Percent) +
+  coord_cartesian(xlim = NULL, ylim = (c(0, 1500))) +
+  labs(title = "Patch Core Area, top percentiles (Y: 0-1500)") +
+  xlab("EPA Lvl 3 Ecoregion") +
+  theme(axis.text.x=element_blank())
+
+ggsave(here::here('figs', 'patchAreaExtremes.png'))
+
+
+
+
+
+# show_correlation(patchStats %>% filter(region == "Eastern Batholith") %>% select(-region), method = "pearson")
+# 
+# 
+# show_correlation(patchStats %>% filter(region == "Lochsa-Selway-Clearwater Canyons") %>% select(-region), method = "pearson")
+
+
+```
+
+```{r}
+
+classStatsReshape <- classStats %>%
+  select(-type, -function_name, -metric) %>%
+  pivot_wider(names_from = name, values_from = value)
+
+patchStatsReshape <- patchStats %>%
+  select(-type, -function_name, -metric) %>%
+  pivot_wider(names_from = name, values_from = value)
+
+patchSummary <- patchStatsReshape %>%
+  group_by(flNm) %>%
+  summarise(medCorePSize = median(`core area`),
+            meanCorePSize = mean(`core area`),
+            maxCorePSize = max(`core area`))
+
+
+
+classStatsMap <- aoiL4Interest %>%
+  left_join(nameJoin) %>%
+  left_join(classStatsReshape,
+            join_by(flNm == flNm,
+                    US_L3NAME == US_L3NAME),
+            keep = FALSE) %>%
+  st_as_sf() %>%
+  filter(flNm != "AlpineZone") %>%
+  mutate(area = st_area(.)) %>%
+  left_join(patchSummary) %>%
+  left_join(forestL4Stats, by = join_by(flNm == flNm)) %>%
+  mutate(nPatchPerFArea = `number of patches` / forestAreaHa,
+        `core area percentage of forest` = (`total core area` / forestAreaHa) * 100)
+
+
+tm <- tm_shape(classStatsMap) +
+  tm_fill(col = "core area percentage of forest",
+          colorNULL = "eeeeee",
+          style = "cont") +
+  tm_layout(title = "Core area percentage of the forest landscape")
+tm
+tmap_save(tm, here::here('figs', 'caPerL4Map.png'))
+
+# tm <- tm_shape(classStatsMap %>% filter(!is.na(`core area percentage of forest`))) +
+#   tm_fill(col = "core area percentage of forest",
+#           colorNULL = "eeeeee",
+#           style = "log10") +
+#   tm_layout(title = "Core area percentage of the forest landscape")
+# tm
+# tmap_save(tm, here::here('figs', 'caPerL4MapLog10.png'))
+
+tm <- tm_shape(classStatsMap %>% filter(`core area percentage of forest` < 2)) +
+  tm_fill(col = "core area percentage of forest",
+          colorNULL = "eeeeee",
+          style = "cont") +
+  tm_layout(title = "Core area percentage of the forest landscape <2%")
+tm
+tmap_save(tm, here::here('figs', 'caPerL4Map_noOutlier.png'))
+
+tm <- tm_shape(classStatsMap) +
+  tm_fill(col = "number of patches", colorNULL = "eeeeee") +
+  tm_layout(title = "number of patches")
+tm
+tmap_save(tm, here::here('figs', 'npatchL4Map.png'))
+
+
+tm <- tm_shape(classStatsMap) +
+  tm_fill(col = "nPatchPerFArea", colorNULL = "eeeeee") +
+  tm_layout(title = "Number of patches per forest area")
+tm
+tmap_save(tm, here::here('figs', 'npatchpAreaL4Map.png'))
+
+tm_shape(classStatsMap) +
+  tm_fill(col = "largest patch index", colorNULL = "eeeeee") +
+  tm_layout(title = "largest patch index")
+
+tm <- tm_shape(classStatsMap) +
+  tm_fill(col = "medCorePSize", colorNULL = "eeeeee") +
+  tm_layout(title = "Median core size")
+tm
+tmap_save(tm, here::here('figs', 'medCorePL4Map.png'))
+
+tm <- tm_shape(classStatsMap) +
+  tm_fill(col = "meanCorePSize", colorNULL = "eeeeee") +
+  tm_layout(title = "Mean core size")
+tm
+tmap_save(tm, here::here('figs', 'meanCorePL4Map.png'))
+
+tm <- tm_shape(classStatsMap) +
+  tm_fill(col = "maxCorePSize", colorNULL = "eeeeee") +
+  tm_layout(title = "Max core size")
+tm
+tmap_save(tm, here::here('figs', 'maxCorePL4Map.png'))
+
+
+```
+
+```{r}
+
+ggplot(classStatsMap, aes(x = `core area percentage of forest`, y = meanCorePSize)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_poly_eq() +
+  labs(title = "Mean core size")
+
+ggplot(classStatsMap, aes(x = `core area percentage of forest`, y = medCorePSize)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_poly_eq() +
+  labs(title = "Median core size")
+ggsave(here::here('figs', 'MedianCoreSizeCAPF.png'))
+
+ggplot(classStatsMap, aes(x = `core area percentage of forest`, y = maxCorePSize)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_poly_eq() +
+  labs(title = "Max core size")
+
+ggplot(classStatsMap, aes(x = `core area percentage of forest`, y = nPatchPerFArea)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_poly_eq() +
+  labs(title = "Number of patches per forest area")
+  
+
+
+patchStatsL4Top90Carea <- filter_by_percentile(data = patchStatsReshape,
+                                          group = flNm,
+                                          value = `core area`,
+                                          percentile = .9) %>%
+  group_by(flNm) %>%
+  summarize(medCorePSize90 = median(`core area`),
+            meanCorePSize90 = mean(`core area`))
+
+patchStatsL4Top95Carea <- filter_by_percentile(data = patchStatsReshape,
+                                          group = flNm,
+                                          value = `core area`,
+                                          percentile = .95) %>%
+  group_by(flNm) %>%
+  summarize(medCorePSize95 = median(`core area`),
+            meanCorePSize95 = mean(`core area`))
+
+patchStatsL4Top975Carea <- filter_by_percentile(data = patchStatsReshape,
+                                          group = flNm,
+                                          value = `core area`,
+                                          percentile = .975) %>%
+  group_by(flNm) %>%
+  summarize(medCorePSize975 = median(`core area`),
+            meanCorePSize975 = mean(`core area`))
+
+classStatsMap2 <- classStatsMap %>% 
+  left_join(patchStatsL4Top90Carea,
+           join_by(flNm == flNm)) %>% 
+    left_join(patchStatsL4Top95Carea,
+           join_by(flNm == flNm)) %>%
+  left_join(patchStatsL4Top975Carea,
+           join_by(flNm == flNm))
+
+ggplot(classStatsMap2, aes(x = `core area percentage of forest`, y = medCorePSize90)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_poly_eq() +
+  labs(title = "Median core size, 90 percentile")
+ggsave(here::here('figs', 'MedianCoreSizeCAPF90.png'))
+
+ggplot(classStatsMap2, aes(x = `core area percentage of forest`, y = meanCorePSize90)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_poly_eq() +
+  labs(title = "Mean core size, 90 percentile")
+
+ggplot(classStatsMap2, aes(x = `core area percentage of forest`, y = medCorePSize95)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_poly_eq() +
+  labs(title = "Median core size, 95 percentile")
+ggsave(here::here('figs', 'MedianCoreSizeCAPF95.png'))
+
+ggplot(classStatsMap2, aes(x = `core area percentage of forest`, y = meanCorePSize95)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_poly_eq() +
+  labs(title = "Mean core size, 95 percentile")
+
+ggplot(classStatsMap2, aes(x = `core area percentage of forest`, y = medCorePSize975)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_poly_eq() +
+  labs(title = "Median core size, 97.5 percentile")
+ggsave(here::here('figs', 'MedianCoreSizeCAPF975.png'))
+
+ggplot(classStatsMap2, aes(x = `core area percentage of forest`, y = meanCorePSize975)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_poly_eq() +
+  labs(title = "Mean core size, 97.5 percentile")
+
+ggplot(classStatsMap2, aes(x = `core area percentage of forest`, y = `largest patch index`)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_poly_eq() +
+  labs(title = "Largest Patch Index")
+
+
+```
+
+```{r}
+tm_shape(classStatsMap2) +
+  tm_fill(col = "meanCorePSize90", colorNULL = "eeeeee") +
+  tm_layout(title = "Mean core size, 90th percentile")
+
+l3cap <- patchStatsReshape %>%
+  group_by(US_L3NAME) %>%
+  summarize(totCA = sum(`core area`)) %>%
+  left_join(aoiL3Interest %>% 
+    mutate(tAreaHa = drop_units(st_area(aoiL3Interest)) * .0001) %>%
+    mutate(US_L3NAME = NA_L3NAME)) %>%
+  mutate(`core area percentage of landscape` = (totCA / tAreaHa) * 100) %>%
+  left_join(forestL3Stats) %>%
+  mutate(`core area percentage of forest` = (totCA / forestAreaHa) * 100) %>%
+    mutate(US_L3NAME = factor(US_L3NAME, level = c('Middle Rockies',
+                                                 'Southern Rockies',
+                                                 'Idaho Batholith',
+                                                 'Sierra Nevada')))
+
+ggplot(l3cap) +
+  geom_col(aes(x = US_L3NAME, y=`core area percentage of forest`, fill = US_L3NAME)) +
+  labs(title = "Fire/Insect Core Area percentage of Forested (BPS) Landscape")
+ggsave(here::here('figs', 'caPerL3.png'))
+
+

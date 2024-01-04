@@ -19,27 +19,26 @@ rm(list=ls()) #Ensure empty workspace if running from beginning
 #################################################
 
 computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
-rstudio <- TRUE #Sets whether or not the script is being used in RStudio or not; important for CyVerse processing; TRUE or FALSE
 
+#################################################
 
 #Set outdirectory
 if(computing == "local") {
-  outDirT <- here::here("data", "derived")
-  if (!dir.exists(outDirT)){
-    dir.create(outDirT)
-  }
+  devDir <- here::here("data", "derived")
 } else if(computing == "cyverse") {
-  outDirT <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/"
-  if (!dir.exists(outDirT)){
-    dir.create(outDirT)
-  }
+  devDir <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived"
+}
+if (!dir.exists(devDir)){
+  dir.create(devDir)
 }
 
+# NO LONGER NECESSARY
+# NO LONGER NECESSARY rstudio <- TRUE #Sets whether or not the script is being used in RStudio or not; important for CyVerse processing; TRUE or FALSE
 
-# #NOTE: THIS LINE MUST BE RUN BEFORE LOADING ANY LIBRARIES TO MAKE GEOSPATIAL PROJECTIONS WORK PROPERLY IN R STUDIO ON CYVERSE!
-if(computing == "cyverse" & rstudio) {
-  Sys.setenv(PROJ_LIB="/opt/conda/envs/macrosystems/share/proj")
-}
+# # #NOTE: THIS LINE MUST BE RUN BEFORE LOADING ANY LIBRARIES TO MAKE GEOSPATIAL PROJECTIONS WORK PROPERLY IN R STUDIO ON CYVERSE!
+# if(computing == "cyverse" & rstudio) {
+#   Sys.setenv(PROJ_LIB="/opt/conda/envs/macrosystems/share/proj")
+# }
 
 ```
 # SETUP 
@@ -82,7 +81,9 @@ library(ecoregions)
 
 ## Clean workspace & set up environment ----
 here::here() #Check here location
-here::i_am("code/00_ForestStats.Rmd")
+if(computing == "local") {
+  here::i_am("code/00_ForestStats.Rmd")
+}
 #OR
 #setwd() #Set working directory directly
 options(digits = 6) #Set standard decimal print output
@@ -99,7 +100,7 @@ if(computing == "local") {
   fMask <- terra::rast(here::here('data', 'raw', 'landfire-bps-derived-forest-mask.tif'))
 } else if(computing == "cyverse") {
   #Load forest
-  fMask <- terra::rast(here::here('~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/raw/landfire-bps-derived-forest-mask.tif'))
+  fMask <- terra::rast(here::here('~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/raw/landfire-bps-derived-forest-mask.tif'))
 }
 
 #Load EPA ecoregion data from ecoregions package
@@ -118,6 +119,9 @@ nameJoin <- cbind(epaL4$us_l4name,
   as.data.frame() %>%
   dplyr::distinct() %>%
   dplyr::mutate(us_l4l3name = glue::glue("{us_l4nameclean}{us_l3nameclean}"))
+
+#Write out for use in other scripts
+readr::write_csv(nameJoin, file.path(devDir, "epal3l4_name_join.csv"))
 
 ```
 
@@ -179,24 +183,21 @@ forestL4Stats <- forestL4 |>
   cbind(aoiL4Interest$us_l4l3name, aoiL4Interest$areaHa) |>
   `names<-`(c("forestPix", "us_l4l3name", "areaHa")) |>
   dplyr::mutate(forestAreaHa = forestPix * 900 * 0.0001, #900m^2 / pixel, ha conversion .0001
-                percForest = 100* (forestAreaHa / areaHa)) |> 
-  dplyr::left_join(nameJoin, by = join_by(us_l4l3name))
+                percForest = 100 * (forestAreaHa / areaHa)) |> 
+  dplyr::left_join(nameJoin, by = join_by(us_l4l3name)) %>%
+  replace(is.na(.), 0)
 
 forestL3Stats <- forestL4Stats |>
   dplyr::group_by(us_l3name, us_l3nameclean) |>
   dplyr::summarise(forestPix = sum(forestPix),
                    forestAreaHa = sum(forestAreaHa),
                    areaHa = sum(areaHa)) |>
-  dplyr::mutate(percForest = 100* (forestAreaHa / areaHa))
+  dplyr::mutate(percForest = 100 * (forestAreaHa / areaHa)) %>%
+  replace(is.na(.), 0)
 
-
-if(computing == "local") {
-  readr::write_csv(forestL4Stats, here::here('data', 'derived', 'forest_l4_dats.csv'))
-  readr::write_csv(forestL3Stats, here::here('data', 'derived', 'forest_l3_dats.csv'))
-} else if(computing == "cyverse") {
-  readr::write_csv(forestL4Stats, '~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/derived/forest_l4_dats.csv')
-  readr::write_csv(forestL3Stats, '~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/derived/forest_l3_dats.csv')
-}
+#Write out
+readr::write_csv(forestL4Stats, file.path(devDir, "forest_l4_dats.csv"))
+readr::write_csv(forestL3Stats, file.path(devDir, "forest_l3_dats.csv"))
 
 
 

@@ -19,33 +19,24 @@ rm(list=ls()) #Ensure empty workspace if running from beginning
 #################################################
 
 computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
-rstudio <- TRUE #Sets whether or not the script is being used in RStudio or not; important for CyVerse processing; TRUE or FALSE
 parallelFuture <- TRUE #Sets whether or not parallel computing is used; TRUE or FALSE 
-aoiL3Names <- c("Southern Rockies") #The names of the EPA Level 3 ecoregions of interest, may be any length
+aoiL3Names <- c("Southern Rockies") #The names of the EPA Level 3 ecoregions of interest, may be any length, e.g. c("Sierra Nevada", "Middle Rockies", "Idaho Batholith","Southern Rockies"). May also be NULL, in which case the AOI will be determined by calculations on data from the 00_ForestStats.Rmd script
+forestPercCutoff <- 2 #The percentage of forest below which EPA regions will not be retained for calcuations, if aoiL3Names == NULL
 edgeDepth <- 200 #in meters
 resolution <- 30 #in meters
+nCores <- 2 #number of cores if on CyVerse - future package struggles to read automatically on CyVerse, reads 128 (the maximum number of cores)
 
-#aoiL3Names <- c("Sierra Nevada", "Middle Rockies", "Idaho Batholith","Southern Rockies") #The names of the EPA Level 3 ecoregions of interest, may be any length
-
-
-#Set outdirectory
-if(computing == "local") {
-  outDirT <- here::here("data", "derived", "metric_tables")
-  if (!dir.exists(outDirT)){
-    dir.create(outDirT)
-  }
-} else if(computing == "cyverse") {
-  outDirT <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/metric_tables"
-  if (!dir.exists(outDirT)){
-    dir.create(outDirT)
-  }
-}
+#################################################
 
 
-# #NOTE: THIS LINE MUST BE RUN BEFORE LOADING ANY LIBRARIES TO MAKE GEOSPATIAL PROJECTIONS WORK PROPERLY IN R STUDIO ON CYVERSE!
-if(computing == "cyverse" & rstudio) {
-  Sys.setenv(PROJ_LIB="/opt/conda/envs/macrosystems/share/proj")
-}
+# NO LONGER NECESSARY!
+
+# NO LONGER NECESSARY - rstudio <- TRUE #Sets whether or not the script is being used in RStudio or not; important for CyVerse processing; TRUE or FALSE
+
+# # #NOTE: THIS LINE MUST BE RUN BEFORE LOADING ANY LIBRARIES TO MAKE GEOSPATIAL PROJECTIONS WORK PROPERLY IN R STUDIO ON CYVERSE!
+# if(computing == "cyverse" & rstudio) {
+#   Sys.setenv(PROJ_LIB="/opt/conda/envs/macrosystems/share/proj")
+# }
 
 ```
 # SETUP 
@@ -65,6 +56,7 @@ list.of.packages <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr
                       "landscapemetrics",  #Fragstats for R
                       "tictoc", #time running of processes
                       "tmap",
+                      "profvis",
                       "purrr",
                       "glue", #easy strings
                       "remotes", #to access github libraries
@@ -72,11 +64,6 @@ list.of.packages <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr
 
 #Install all packages that aren't installed yet
 install.packages(setdiff(list.of.packages, rownames(installed.packages())))
-
-# #Force install raster if on cyverse, since old version is installed
-# if(computing == "cyverse") {
-#   install.packages("raster")
-# }
 
 #Load all packages
 invisible(lapply(list.of.packages, library, character.only = TRUE)) #use 'invisible' to prevent output being displayed
@@ -91,7 +78,9 @@ library(ecoregions)
 
 ## Clean workspace & set up environment ----
 here::here() #Check here location
-here::i_am("code/01_SpatStats.Rmd")
+if(computing == "local") {
+  here::i_am("code/01_SpatStats.Rmd")
+}
 #OR
 #setwd() #Set working directory directly
 options(digits = 6) #Set standard decimal print output
@@ -103,11 +92,10 @@ options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
 
 ```{r}
 #Set cores
-nCores <- future::availableCores()
-if(nCores > 120) {
-  nCores <- 120
-} else {
-  nCores <- nCores - 1
+if(computing == "local") {
+  nCores <- future::availableCores()
+} else if(computing == "cyverse") {
+  print("Using user-defined number of computing cores")
 }
 
 #Start futureverse parallel computing
@@ -154,20 +142,32 @@ test.future.function <- function(fun, ...) {
 # Load data and manage data paths
 
 ```{r, echo = FALSE}
-#Load data
+
+
+#Set directories
 
 if(computing == "local") {
-  fileLocation <- here::here('data', 'nathan_outputs')
-  fireInsects <- terra::rast(here::here(fileLocation, "fire_and_insects.tif"))
-  fireStack <- terra::rast(here::here('data', 'derived', 'fire_dist_stack_west.tif'))
+  devDir <- here::here('data', 'derived')
 } else if(computing == "cyverse") {
-  fireInsects <- terra::rast("~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/nathan_outputs/fire_and_insects.tif")
-  fireStack <- terra::rast("~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/derived/fire_dist_stack_west.tif")
-  insectStack <- terra::rast("~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/derived/insect_dist_stack_west.tif")
-
+  devDir <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived"
 }
 
+if(computing == "local") {
+  outDirT <- here::here(devDir, "metric_tables")
+} else if(computing == "cyverse") {
+  outDirT <- file.path(devDir, "metric_tables")
+}
+if (!dir.exists(outDirT)){
+  dir.create(outDirT)
+}
 
+#Load data
+fireInsects <- terra::rast(file.path(devDir, "fire_and_insects.tif"))
+fireStack <- terra::rast(file.path(devDir, 'fire_dist_stack_west.tif'))
+insectStack <- terra::rast(file.path(devDir, 'insect_dist_stack_west.tif'))
+nameJoin <- readr::read_csv(file.path(devDir, "epal3l4_name_join.csv")) #EPA ecoregion distinct name table for joins (from script 00_ForestStats.rmd)
+forestL4Stats <- readr::read_csv(file.path(devDir, "forest_l4_dats.csv")) #EPA ecoregion stats on amount of forest (from script 00_ForestStats.rmd)
+forestL3Stats <- readr::read_csv(file.path(devDir, "forest_l3_dats.csv")) #EPA ecoregion stats on amount of forest (from script 00_ForestStats.rmd
 
 #Load EPA ecoregion data from ecoregions package
 epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
@@ -175,36 +175,58 @@ epaL3 <- ecoregions::ContinentalUsEcoregion3 %>%
 epaL4 <- ecoregions::ContinentalUsEcoregion4 %>% 
   sf::st_transform(terra::crs(fireInsects))
 
-  
-#EPA ecoregion distinct name table for joins
-nameJoin <- cbind(epaL4$us_l4name, 
-                  gsub(" ", "", epaL4$us_l4name),
-                  epaL4$us_l3name,
-                  gsub(" ", "", epaL4$us_l3name)) %>% 
-  `colnames<-`(c('us_l4name', 'us_l4nameclean', 'us_l3name', 'us_l3nameclean')) %>%
-  as.data.frame() %>%
-  dplyr::distinct() %>%
-  dplyr::mutate(us_l4l3name = glue::glue("{us_l4nameclean}{us_l3nameclean}"))
-
 ```
 
 # Set the areas of interest
 
 ```{r}
 
-#EPA level 3 AOI
-aoiL3Interest <- epaL3 %>%
-  filter(us_l3name %in% aoiL3Names) %>%
-  group_by(us_l3name) %>%
-  summarize(geometry = st_union(geometry)) %>%
-  mutate(us_l3nameclean = gsub(" ", "", us_l3name))
+if(!is.null(aoiL3Names)) {
+  #EPA level 3 AOI
+  aoiL3Interest <- epaL3 |>
+    dplyr::filter(us_l3name %in% aoiL3Names) |>
+    dplyr::group_by(us_l3name) |>
+    dplyr::summarize(geometry = st_union(geometry)) |>
+    dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name))
+  
+  #EPA level 4 AOI
+  aoiL4Interest <- epaL4 |>
+    dplyr::filter(us_l3name %in% aoiL3Names) |>
+    dplyr::group_by(us_l4name, us_l3name) |>
+    dplyr::summarize(geometry = st_union(geometry)) |>
+    dplyr::left_join(nameJoin, join_by(us_l3name, us_l4name))
+} else { # ADD IN AUTO - FOREST FINDER
 
-#EPA level 4 AOI
-aoiL4Interest <- epaL4 %>%
-  filter(us_l3name %in% aoiL3Names) %>%
-  group_by(us_l4name, us_l3name) %>%
-  summarize(geometry = st_union(geometry)) %>%
-  left_join(nameJoin, join_by(us_l3name, us_l4name))
+  l3AboveForestPerc <- forestL3Stats |>
+    dplyr::filter(percForest >= forestPercCutoff) |>
+    dplyr::pull(us_l3nameclean)
+  l4AboveForestPerc <- forestL4Stats |>
+    dplyr::filter(percForest >= forestPercCutoff) |>
+    dplyr::pull(us_l4l3name)
+
+  #EPA level 3 AOI
+  aoiL3Interest <- epaL3 |>
+    dplyr::group_by(us_l3name) |>
+    dplyr::summarize(geometry = st_union(geometry)) |>
+    dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name)) |>
+    dplyr::filter(us_l3nameclean %in% l3AboveForestPerc)
+  
+  #EPA level 4 AOI
+  aoiL4Interest <- epaL4 |>
+    dplyr::group_by(us_l4name, us_l3name) |>
+    dplyr::summarize(geometry = st_union(geometry)) |>
+    dplyr::left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
+    dplyr::filter(us_l4l3name %in% l4AboveForestPerc)
+}
+
+#Two small l4 ecoregions to test script
+test <- epaL4 |>
+  dplyr::group_by(us_l4name, us_l3name) |>
+  dplyr::summarize(geometry = st_union(geometry)) |>
+  dplyr::left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
+  dplyr::filter(us_l4name == "Foothill Potholes" | us_l4name == "Western Beaverhead Mountains")
+
+
 
 ```
 
@@ -252,6 +274,7 @@ careful.clip <- function(raster, vector) {
 #Returns the set of rasters as a named list 
 careful.clip.set <- function(raster, vectors, namefield) {
   splitVec <- split(vectors, f=vectors[[namefield]])
+  future::plan("sequential")
   if (is(future::plan() ,"sequential")) {
     print("Performing clip set in sequence")
     out <- splitVec |> purrr::map(careful.clip, raster = raster)
@@ -265,6 +288,7 @@ careful.clip.set <- function(raster, vectors, namefield) {
     out <- out |>
       purrr::map(terra::unwrap)
   }
+  future::plan("multisession", workers = nCores)
   return(out)
 }
 
@@ -490,8 +514,12 @@ read.set.csvs.as.one <- function(setNm) {
 ```{r}
 
 #Function to bring all of the above functions together
-#This function requires a set name (setNm) as a string, which clarifies what the input raster represents (e.g. "Fire")
-calculate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
+#This function requires a set name (setNm) as a string, which clarifies what the input raster represents (e.g. "Fire"), and will be used in the output file names
+#Output files will be in OutDirT, in the form: "setNm_ecoregion_class/patch_epaLevel.csv"
+generate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
+  if(grepl("_", setNm)) {
+    stop("'setNm' cannot contain an underscore")
+  }
   #If the aoi set is for epa l4 ecoregions, process appropriately and do both class and patch metrics
   if("us_l4l3name" %in% names(aoiSet)) {
     clippedRasterList <- careful.clip.set(raster, aoiSet, "us_l4l3name")
@@ -510,22 +538,11 @@ calculate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
     classMetrics %>%
        purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
   }
-  asTbl <- read.set.csvs.as.one(setNm)
-  return(asTbl)
+  gc()
+  # asTbl <- read.set.csvs.as.one(setNm)
+  # return(asTbl)
 }
 
-
-
-# #Clip
-# fireInsectTestList <- careful.clip.set(fireInsects, aoiL4Interest[1:2,], "us_l4l3name")
-# #Calculate metrics
-# classL4 <- fireInsectTestList |>
-#    calculate.class.level.metrics()
-# #write out
-# classL4 %>%
-#    purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = "FireInsect")
-# # Read in
-# z <- read.set.csvs.as.one("FireInsect")
 
 
 ```
@@ -537,9 +554,16 @@ calculate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
 ```{r}
 
 
+tic("One-layer raster")
+# testOut <- generate.raster.metrics.for.aoi.set(fireInsects, test, setNm = "test_normal")
+testOut <- generate.raster.metrics.for.aoi.set(fireInsects, test, setNm = "testSingle")
+toc()
+testOut <- generate.raster.metrics.for.aoi.set(fireInsects, test, setNm = "testSingle2")
 
-testOut <- calculate.raster.metrics.for.aoi.set(fireInsects, aoiL4Interest[1:2,], setNm = "FireInsects2")
 
+tic("Multi-layer raster")
+testOut <- generate.raster.metrics.for.aoi.set(fireStack, test, setNm = "test")
+toc()
 
 
 
@@ -574,6 +598,8 @@ testOut <- calculate.raster.metrics.for.aoi.set(fireInsects, aoiL4Interest[1:2,]
 # # #Write out
 # # classL4 %>%
 # #   purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT)
+
+
 
 
 
