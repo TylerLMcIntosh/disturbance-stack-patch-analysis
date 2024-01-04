@@ -1,17 +1,4 @@
-Run spatial statistics on disturbance stack
-
-Tyler L. McIntosh
-CU Boulder CIRES Earth Lab
-Last updated: 10/20/23
-
-This script uses the following naming conventions wherever possible:
- lowerCamelCase for variables
- period.separated for functions
- underscore_separated for files
-
-# SET GLOBAL PARAMETERS
-
-```{r}
+## ----------------------------------------------------------------------------------------------------------------------
 rm(list=ls()) #Ensure empty workspace if running from beginning
 
 #################################################
@@ -38,11 +25,9 @@ nCores <- 2 #number of cores if on CyVerse - future package struggles to read au
 #   Sys.setenv(PROJ_LIB="/opt/conda/envs/macrosystems/share/proj")
 # }
 
-```
-# SETUP 
-#Load packages etc
 
-```{r, echo = FALSE, warning = FALSE, message = FALSE}
+
+## ---- echo = FALSE, warning = FALSE, message = FALSE-------------------------------------------------------------------
 # SETUP ----
 ## Libraries ----
 
@@ -85,12 +70,9 @@ if(computing == "local") {
 #setwd() #Set working directory directly
 options(digits = 6) #Set standard decimal print output
 options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
-```
 
 
-# Manage computing & CI vs local
-
-```{r}
+## ----------------------------------------------------------------------------------------------------------------------
 #Set cores
 if(computing == "local") {
   nCores <- future::availableCores()
@@ -137,11 +119,9 @@ test.future.function <- function(fun, ...) {
 }
 
 
-```
 
-# Load data and manage data paths
 
-```{r, echo = FALSE}
+## ---- echo = FALSE-----------------------------------------------------------------------------------------------------
 
 
 #Set directories
@@ -175,49 +155,47 @@ epaL3 <- ecoregions::ContinentalUsEcoregion3 %>%
 epaL4 <- ecoregions::ContinentalUsEcoregion4 %>% 
   sf::st_transform(terra::crs(fireInsects))
 
-```
 
-# Set the areas of interest
 
-```{r}
-
-if(!is.null(aoiL3Names)) {
-  #EPA level 3 AOI
-  aoiL3Interest <- epaL3 |>
-    dplyr::filter(us_l3name %in% aoiL3Names) |>
-    dplyr::group_by(us_l3name) |>
-    dplyr::summarize(geometry = st_union(geometry)) |>
-    dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name))
-  
-  #EPA level 4 AOI
-  aoiL4Interest <- epaL4 |>
-    dplyr::filter(us_l3name %in% aoiL3Names) |>
-    dplyr::group_by(us_l4name, us_l3name) |>
-    dplyr::summarize(geometry = st_union(geometry)) |>
-    dplyr::left_join(nameJoin, join_by(us_l3name, us_l4name))
-} else { # ADD IN AUTO - FOREST FINDER
-
-  l3AboveForestPerc <- forestL3Stats |>
-    dplyr::filter(percForest >= forestPercCutoff) |>
-    dplyr::pull(us_l3nameclean)
-  l4AboveForestPerc <- forestL4Stats |>
-    dplyr::filter(percForest >= forestPercCutoff) |>
-    dplyr::pull(us_l4l3name)
-
-  #EPA level 3 AOI
-  aoiL3Interest <- epaL3 |>
-    dplyr::group_by(us_l3name) |>
-    dplyr::summarize(geometry = st_union(geometry)) |>
-    dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name)) |>
-    dplyr::filter(us_l3nameclean %in% l3AboveForestPerc)
-  
-  #EPA level 4 AOI
-  aoiL4Interest <- epaL4 |>
-    dplyr::group_by(us_l4name, us_l3name) |>
-    dplyr::summarize(geometry = st_union(geometry)) |>
-    dplyr::left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
-    dplyr::filter(us_l4l3name %in% l4AboveForestPerc)
-}
+## ----------------------------------------------------------------------------------------------------------------------
+# 
+# if(!is.null(aoiL3Names)) {
+#   #EPA level 3 AOI
+#   aoiL3Interest <- epaL3 |>
+#     dplyr::filter(us_l3name %in% aoiL3Names) |>
+#     dplyr::group_by(us_l3name) |>
+#     dplyr::summarize(geometry = st_union(geometry)) |>
+#     dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name))
+#   
+#   #EPA level 4 AOI
+#   aoiL4Interest <- epaL4 |>
+#     dplyr::filter(us_l3name %in% aoiL3Names) |>
+#     dplyr::group_by(us_l4name, us_l3name) |>
+#     dplyr::summarize(geometry = st_union(geometry)) |>
+#     dplyr::left_join(nameJoin, join_by(us_l3name, us_l4name))
+# } else { # ADD IN AUTO - FOREST FINDER
+# 
+#   l3AboveForestPerc <- forestL3Stats |>
+#     dplyr::filter(percForest >= forestPercCutoff) |>
+#     dplyr::pull(us_l3nameclean)
+#   l4AboveForestPerc <- forestL4Stats |>
+#     dplyr::filter(percForest >= forestPercCutoff) |>
+#     dplyr::pull(us_l4l3name)
+# 
+#   #EPA level 3 AOI
+#   aoiL3Interest <- epaL3 |>
+#     dplyr::group_by(us_l3name) |>
+#     dplyr::summarize(geometry = st_union(geometry)) |>
+#     dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name)) |>
+#     dplyr::filter(us_l3nameclean %in% l3AboveForestPerc)
+#   
+#   #EPA level 4 AOI
+#   aoiL4Interest <- epaL4 |>
+#     dplyr::group_by(us_l4name, us_l3name) |>
+#     dplyr::summarize(geometry = st_union(geometry)) |>
+#     dplyr::left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
+#     dplyr::filter(us_l4l3name %in% l4AboveForestPerc)
+# }
 
 #Two small l4 ecoregions to test script
 test <- epaL4 |>
@@ -228,11 +206,9 @@ test <- epaL4 |>
 
 
 
-```
 
-# Functions to create raster sets for AOIs
 
-```{r}
+## ----------------------------------------------------------------------------------------------------------------------
 
 #Function to clip a raster to a vector, ensuring in same projection
 #Returns raster in original projection, but clipped and masked to vector
@@ -274,7 +250,7 @@ careful.clip <- function(raster, vector) {
 #Returns the set of rasters as a named list 
 careful.clip.set <- function(raster, vectors, namefield) {
   splitVec <- split(vectors, f=vectors[[namefield]])
-  future::plan("sequential")
+  #future::plan("sequential")
   if (is(future::plan() ,"sequential")) {
     print("Performing clip set in sequence")
     out <- splitVec |> purrr::map(careful.clip, raster = raster)
@@ -288,19 +264,14 @@ careful.clip.set <- function(raster, vectors, namefield) {
     out <- out |>
       purrr::map(terra::unwrap)
   }
-  future::plan("multisession", workers = nCores)
+  #future::plan("multisession", workers = nCores)
   return(out)
 }
 
 
-```
 
 
-
-
-# Functions to create csv files with data on landscape metrics for all regions in the AOI, EPA L4 & L3
-
-```{r}
+## ----------------------------------------------------------------------------------------------------------------------
 
 #Function to run landscapemetrics::calculate_lsm and add the layer names
 calculate.lsm.with.names <- function(land, ...) {
@@ -493,11 +464,9 @@ write.land.metric.csv.w.name <- function(df, nm, dir, set) {
 
 
 
-```
 
-# Functions to read back in files and perform computations
 
-```{r}
+## ----------------------------------------------------------------------------------------------------------------------
 
 #A function to read in all csvs output with the same set name
 read.set.csvs.as.one <- function(setNm) {
@@ -508,10 +477,9 @@ read.set.csvs.as.one <- function(setNm) {
 }
 
 
-```
-# Function to perform all operations on a given set
 
-```{r}
+
+## ----------------------------------------------------------------------------------------------------------------------
 
 #Function to bring all of the above functions together
 #This function requires a set name (setNm) as a string, which clarifies what the input raster represents (e.g. "Fire"), and will be used in the output file names
@@ -545,13 +513,9 @@ generate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
 
 
 
-```
 
-# CORE CODE
 
-# Run large functions
-
-```{r}
+## ----------------------------------------------------------------------------------------------------------------------
 
 
 tic("One-layer raster, parallel")
@@ -561,7 +525,7 @@ toc()
 
 
 tic("Multi-layer raster, parallel")
-testOut <- generate.raster.metrics.for.aoi.set(fireStack, test, setNm = "test")
+#testOut <- generate.raster.metrics.for.aoi.set(fireStack, test, setNm = "test")
 toc()
 
 
@@ -601,7 +565,5 @@ toc()
 
 
 
-
-```
 
 
