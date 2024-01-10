@@ -195,7 +195,7 @@ if(!is.null(aoiL3Names)) {
     dplyr::group_by(us_l4name, us_l3name) |>
     dplyr::summarize(geometry = st_union(geometry)) |>
     dplyr::left_join(nameJoin, join_by(us_l3name, us_l4name))
-} else { # ADD IN AUTO - FOREST FINDER
+} else { #Auto-forest find
 
   l3AboveForestPerc <- forestL3Stats |>
     dplyr::filter(percForest >= forestPercCutoff) |>
@@ -224,9 +224,14 @@ test <- epaL4 |>
   dplyr::group_by(us_l4name, us_l3name) |>
   dplyr::summarize(geometry = st_union(geometry)) |>
   dplyr::left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
-  dplyr::filter(us_l4name == "Foothill Potholes" | us_l4name == "Western Beaverhead Mountains")
+  #dplyr::filter(us_l4name == "Foothill Potholes" | us_l4name == "Western Beaverhead Mountains")
+  dplyr::filter(us_l4name == "Western Beaverhead Mountains")
 
 
+test2 <- epaL3 |>
+  dplyr::group_by(us_l3name) |>
+  dplyr::summarize(geometry = st_union(geometry)) |>
+  dplyr::filter(us_l3name == "Southern Rockies")  
 
 ```
 
@@ -273,7 +278,12 @@ careful.clip <- function(raster, vector) {
 #Namefield indicates the field to use to name the item in the returned list (e.g. "us_l4l3name")
 #Returns the set of rasters as a named list 
 careful.clip.set <- function(raster, vectors, namefield) {
-  splitVec <- split(vectors, f=vectors[[namefield]])
+  if(nrow(vectors) == 1) {
+    splitVec <- list()
+    splitVec[[1]] <- vectors
+  } else {
+    splitVec <- split(vectors, f=vectors[[namefield]])
+  }
   future::plan("sequential")
   if (is(future::plan() ,"sequential")) {
     print("Performing clip set in sequence")
@@ -334,6 +344,7 @@ add.region.to.metric.df <- function(df, nm) {
 #Function to calculate class-level metrics, add LSM names, and add contextual data over a named list of landscapes
 #This function is set up to run in parallel with the futureverse
 calculate.class.level.metrics <- function(landList) {
+  tic("Time to calculate class level metrics")
   if(is(future::plan(), "sequential")) {
     print('Calculating class level metrics in sequence')
       out <- landList |>
@@ -362,21 +373,23 @@ calculate.class.level.metrics <- function(landList) {
       out <- landList |>
         purrr::map(terra::wrap) |> #wrap each raster to send to node
         furrr::future_map(parallel.calculate.lsm.with.names, #use parallelized version that unwraps first
+                   # what = c(                     # Testing these took 18.96 seconds in parallel
+                   #           'lsm_c_ed', #patch area-weighted edge density
+                   #           'lsm_c_ca', #total class area
+                   #           'lsm_c_ai',
+                   #           'lsm_c_clumpy',
+                   #           'lsm_c_cpland',
+                   #           'lsm_c_dcad',
+                   #           'lsm_c_division',
+                   #           'lsm_c_lpi',
+                   #           'lsm_c_lsi',
+                   #           'lsm_c_mesh',
+                   #           'lsm_c_np',
+                   #           'lsm_c_pafrac',
+                   #           'lsm_c_tca',
+                   #           'lsm_c_cohesion'), #aggregation of patches
                    what = c(
-                             'lsm_c_ed', #patch area-weighted edge density
-                             'lsm_c_ca', #total class area
-                             'lsm_c_ai',
-                             'lsm_c_clumpy',
-                             'lsm_c_cpland',
-                             'lsm_c_dcad',
-                             'lsm_c_division',
-                             'lsm_c_lpi',
-                             'lsm_c_lsi',
-                             'lsm_c_mesh',
-                             'lsm_c_np',
-                             'lsm_c_pafrac',
-                             'lsm_c_tca',
-                             'lsm_c_cohesion'), #aggregation of patches
+                     'lsm_c_ai'),
                    directions = 8,
                    edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
                    progress = TRUE) |>
@@ -385,11 +398,14 @@ calculate.class.level.metrics <- function(landList) {
   }
   out <- out %>%
     purrr::map2(.f = add.region.to.metric.df, .y = names(.)) #Add more data using add.data.to.metric.df function
+  toc()
   return(out)
 }
 
+
 #Function to calculate class-level metrics, add LSM names, and add contextual data over a named list of landscapes
 calculate.patch.level.metrics <- function(landList) {
+  tic("Time to calculate patch level metrics")
   if(is(future::plan(), "sequential")) {
     print('Calculating patch level metrics in sequence')
       out <- landList |>
@@ -404,7 +420,18 @@ calculate.patch.level.metrics <- function(landList) {
       out <- landList |>
         purrr::map(terra::wrap) |> #wrap each raster to send to node
         furrr::future_map(parallel.calculate.lsm.with.names, #use parallelized version that unwraps first
-                   what = "patch", #all patch metrics
+                   #what = "patch", #all patch metrics         #testing this took 17.41 seconds in parallel
+                   what = c(
+                     'lsm_c_ai',
+                     'lsm_p_area',
+                     'lsm_p_cai',
+                     'lsm_p_core',
+                     'lsm_p_enn',
+                     'lsm_p_para',
+                     'lsm_p_shape',
+                     'lsm_p_contig',
+                     'lsm_p_circle'
+                   ),
                    directions = 8,
                    edge_depth = edgeDepth %/% resolution, #without remainder; edge depth is in cells
                    progress = TRUE) |>
@@ -413,13 +440,15 @@ calculate.patch.level.metrics <- function(landList) {
   }
   out <- out %>%
     purrr::map2(.f = add.region.to.metric.df, .y = names(.)) #Add more data using add.data.to.metric.df function
+  toc()
   return(out)  
 }
 
 
 #Write out landscape metric CSVs
 write.land.metric.csv.w.name <- function(df, nm, dir, set) {
-  nmApp <- glue::glue("_{unique(df$level)}_{unique(df$epaLevel)}")
+  #nmApp <- glue::glue("_{unique(df$level)}_{unique(df$epaLevel)}")
+  nmApp <- glue::glue("_{unique(df$epaLevel)}")
   flNm <- glue::glue("{set}_{nm}{nmApp}.csv")
   readr::write_csv(df, here::here(dir, flNm))
 }
@@ -523,19 +552,23 @@ generate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
   #If the aoi set is for epa l4 ecoregions, process appropriately and do both class and patch metrics
   if("us_l4l3name" %in% names(aoiSet)) {
     clippedRasterList <- careful.clip.set(raster, aoiSet, "us_l4l3name")
-    classMetrics <- clippedRasterList |>
-       calculate.class.level.metrics()
-    classMetrics %>%
-       purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
+    # classMetrics <- clippedRasterList |>
+    #    calculate.class.level.metrics()
+    # classMetrics %>%
+    #    purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
     patchMetrics <- clippedRasterList |>
        calculate.patch.level.metrics()
     patchMetrics %>%
        purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
   } else { #If L3, only do class metrics
     clippedRasterList <- careful.clip.set(raster, aoiSet, "us_l3nameclean")
-    classMetrics <- clippedRasterList |>
-       calculate.class.level.metrics()
-    classMetrics %>%
+    # classMetrics <- clippedRasterList |>
+    #    calculate.class.level.metrics()
+    # classMetrics %>%
+    #    purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
+    patchMetrics <- clippedRasterList |>
+       calculate.patch.level.metrics()
+    patchMetrics %>%
        purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
   }
   gc()
@@ -557,12 +590,22 @@ generate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
 tic("One-layer raster, parallel")
 # testOut <- generate.raster.metrics.for.aoi.set(fireInsects, test, setNm = "test_normal")
 testOut <- generate.raster.metrics.for.aoi.set(fireInsects, test, setNm = "testSingle")
-toc()
+toc() #15.87 seconds total
+
+tic("One-layer raster, parallel")
+# testOut <- generate.raster.metrics.for.aoi.set(fireInsects, test, setNm = "test_normal")
+testOut <- generate.raster.metrics.for.aoi.set(fireStack, test, setNm = "testSingle")
+toc() #149 seconds total, 2.5 min
+
+tic("One-layer raster, parallel")
+# testOut <- generate.raster.metrics.for.aoi.set(fireInsects, test, setNm = "test_normal")
+testOut <- generate.raster.metrics.for.aoi.set(fireInsects, test2, setNm = "testSingle2")
+toc() #1831 seconds total, 30 min
 
 
-tic("Multi-layer raster, parallel")
-testOut <- generate.raster.metrics.for.aoi.set(fireStack, test, setNm = "test")
-toc()
+# tic("Multi-layer raster, parallel")
+# testOut <- generate.raster.metrics.for.aoi.set(fireStack, test, setNm = "test")
+# toc()
 
 
 
