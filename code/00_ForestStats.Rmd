@@ -171,9 +171,6 @@ aoiL4Interest <- aoiL4Interest |>
   st.area.to.poly() |>
   dplyr::mutate(areaHa = stArea * 0.0001) #Convert to be hectares
 
-#REMOVE WHEN READY FOR FULL RUN!!
-aoiL4Interest <- aoiL4Interest[1:2,]
-
 #Get zonal stats
 forestL4 <- fMask |>
   terra::zonal(z = terra::vect(aoiL4Interest), fun = "sum", na.rm = TRUE, touches = FALSE)

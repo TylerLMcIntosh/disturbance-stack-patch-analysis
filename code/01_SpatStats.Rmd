@@ -2,7 +2,7 @@ Run spatial statistics on disturbance stack
 
 Tyler L. McIntosh
 CU Boulder CIRES Earth Lab
-Last updated: 10/20/23
+Last updated: 1/10/24
 
 This script uses the following naming conventions wherever possible:
  lowerCamelCase for variables
@@ -152,11 +152,7 @@ if(computing == "local") {
   devDir <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived"
 }
 
-if(computing == "local") {
-  outDirT <- here::here(devDir, "metric_tables")
-} else if(computing == "cyverse") {
-  outDirT <- file.path(devDir, "metric_tables")
-}
+outDirT <- file.path(devDir, "metric_tables")
 if (!dir.exists(outDirT)){
   dir.create(outDirT)
 }

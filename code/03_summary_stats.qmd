@@ -1,0 +1,175 @@
+Run spatial statistics on disturbance stack
+
+Tyler L. McIntosh
+CU Boulder CIRES Earth Lab
+Last updated: 1/10/24
+
+This script uses the following naming conventions wherever possible:
+ lowerCamelCase for variables
+ period.separated for functions
+ underscore_separated for files
+
+# SET GLOBAL PARAMETERS
+
+```{r}
+rm(list=ls()) #Ensure empty workspace if running from beginning
+
+#################################################
+#####EVERYTHING HERE SHOULD BE SET MANUALLY######
+#################################################
+
+computing <- "cyverse" #Sets computing location and file setup; "cyverse" or "local"
+
+#################################################
+
+```
+# SETUP 
+#Load packages etc
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# SETUP ----
+## Libraries ----
+
+#Check the required libraries and download if needed
+list.of.packages <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr, forcats
+                      "terra", #New raster data package, documentation pdf here: https://cran.r-project.org/web/packages/terra/terra.pdf
+                      "future", "future.apply", "furrr", "doFuture", "progressr", #Futureverse! https://www.futureverse.org/packages-overview.html; https://henrikbengtsson.github.io/course-stanford-futureverse-2023/
+                      "sf", #New vector data package
+                      #"mapview", #For quick interactive mapping
+                      "here", #Relative path best practices
+                      "tictoc", #time running of processes
+                      "glue", #easy strings
+                      "tigris", #state polygons
+                      "remotes", #to access github libraries
+                      "ggpmisc") #For adding R^2 to plots
+
+#Install all packages that aren't installed yet
+install.packages(setdiff(list.of.packages, rownames(installed.packages())))
+
+#Load all packages
+invisible(lapply(list.of.packages, library, character.only = TRUE)) #use 'invisible' to prevent output being displayed
+#If this line throws an error on cyverse, close R session and re-open
+
+#Install ecoregions package from github if needed, then load package
+if(!"ecoregions" %in% rownames(installed.packages())) {
+  remotes::install_github("tomroh/ecoregions")
+}
+library(ecoregions)
+
+
+## Clean workspace & set up environment ----
+here::here() #Check here location
+if(computing == "local") {
+  here::i_am("code/03_summary_stats.qmd")
+}
+#OR
+#setwd() #Set working directory directly
+options(digits = 6) #Set standard decimal print output
+options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
+```
+
+
+
+# Load data and manage data paths
+
+```{r, echo = FALSE}
+
+
+#Set directories
+
+if(computing == "local") {
+  devDir <- here::here('data', 'derived')
+} else if(computing == "cyverse") {
+  devDir <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived"
+}
+
+outDir <- file.path(devDir, "summary_stats")
+if (!dir.exists(outDir)){
+  dir.create(outDir)
+}
+
+
+#Load data
+fireInsects <- terra::rast(file.path(devDir, "fire_and_insects.tif"))
+fireStack <- terra::rast(file.path(devDir, 'fire_dist_stack_west.tif'))
+# insectStack <- terra::rast(file.path(devDir, 'insect_dist_stack_west.tif'))
+nameJoin <- readr::read_csv(file.path(devDir, "epal3l4_name_join.csv")) #EPA ecoregion distinct name table for joins (from script 00_ForestStats.rmd)
+forestL4Stats <- readr::read_csv(file.path(devDir, "forest_l4_dats.csv")) #EPA ecoregion stats on amount of forest (from script 00_ForestStats.rmd)
+forestL3Stats <- readr::read_csv(file.path(devDir, "forest_l3_dats.csv")) #EPA ecoregion stats on amount of forest (from script 00_ForestStats.rmd
+
+#Load EPA ecoregion data from ecoregions package
+epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
+  sf::st_transform(terra::crs(fireInsects))
+epaL4 <- ecoregions::ContinentalUsEcoregion4 %>% 
+  sf::st_transform(terra::crs(fireInsects))
+
+```
+
+# Set the areas of interest
+
+```{r}
+
+#Pull in state data as context
+usa <- tigris::states() |>
+  sf::st_transform(terra::crs(fireInsects))
+west <- usa[usa$STUSPS %in% c("WA", "OR", "CA", "ID", "MT", "WY", "NV", "AZ", "CO", "NM", "UT"),] 
+
+#EPA level 3 AOI
+aoiL3Interest <- epaL3 |>
+  dplyr::group_by(us_l3name) |>
+  dplyr::summarize(geometry = st_union(geometry)) |>
+  dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name)) |>
+  sf::st_filter(west)
+
+#EPA level 4 AOI, only including L4 ecoregions in the L3 ecoregions of interest
+aoiL4Interest <- epaL4 |>
+  group_by(us_l4name, us_l3name) |>
+  summarize(geometry = st_union(geometry)) |>
+  left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
+  dplyr::filter(us_l3name %in% aoiL3Interest$us_l3name)
+
+
+```
+
+```{r}
+
+#Get zonal stats
+fireInsectL4 <- fireInsects |>
+  terra::zonal(z = terra::vect(aoiL3Interest), fun = "sum", na.rm = TRUE, touches = FALSE) #using ~30gb ram at highest
+x <- aoiL3Interest |> cbind(fireInsectL4)
+
+fireInsectL4_2 <- fireInsects |>
+  terra::freq(bylayer = TRUE, usenames = TRUE, zones = terra::vect(aoiL3Interest), wide = TRUE)
+
+
+
+#testing
+test <- aoiL4Interest |>
+  dplyr::filter(us_l4name == "Foothill Potholes" | us_l4name == "Western Beaverhead Mountains")
+
+
+tic('Single layer zonal')
+t1 <- fireInsects |>
+  terra::zonal(z = terra::vect(test), fun = "sum", na.rm = TRUE, touches = FALSE)
+toc()
+
+tic('Multi-layer zonal')
+t2 <- fireStack |>
+  terra::zonal(z = terra::vect(test), fun = "sum", na.rm = TRUE, touches = FALSE, wide = TRUE)
+toc()
+
+
+tic('Single layer freq')
+t3 <- fireInsects |>
+  terra::freq(bylayer = TRUE, usenames = TRUE, zones = terra::vect(test), wide = TRUE)
+toc()
+
+tic('Multi-layer freq')
+t4 <- fireStack |>
+  terra::freq(bylayer = TRUE, usenames = TRUE, zones = terra::vect(test), wide = TRUE)
+toc()
+
+readr::write_csv(t, file.path(outDir, "fireStackFreqL3.csv"))
+
+
+```
