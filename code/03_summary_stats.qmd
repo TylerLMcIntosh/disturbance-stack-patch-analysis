@@ -2,7 +2,7 @@ Run spatial statistics on disturbance stack
 
 Tyler L. McIntosh
 CU Boulder CIRES Earth Lab
-Last updated: 1/10/24
+Last updated: 1/18/24
 
 This script uses the following naming conventions wherever possible:
  lowerCamelCase for variables
@@ -11,7 +11,7 @@ This script uses the following naming conventions wherever possible:
 
 # SET GLOBAL PARAMETERS
 
-```{r}
+```{r global}
 rm(list=ls()) #Ensure empty workspace if running from beginning
 
 #################################################
@@ -19,14 +19,18 @@ rm(list=ls()) #Ensure empty workspace if running from beginning
 #################################################
 
 computing <- "cyverse" #Sets computing location and file setup; "cyverse" or "local"
+nCores <- 8
 
 #################################################
+
+#Start futureverse parallel computing
+future::plan("multisession", workers = nCores)
 
 ```
 # SETUP 
 #Load packages etc
 
-```{r, echo = FALSE, warning = FALSE, message = FALSE}
+```{r setup, echo = FALSE, warning = FALSE, message = FALSE}
 # SETUP ----
 ## Libraries ----
 
@@ -72,75 +76,158 @@ options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
 
 # Load data and manage data paths
 
-```{r, echo = FALSE}
+```{r load, echo = FALSE}
 
 
 #Set directories
-
+#Derived data
 if(computing == "local") {
   devDir <- here::here('data', 'derived')
 } else if(computing == "cyverse") {
   devDir <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived"
 }
-
+#Specific derived data directory
 outDir <- file.path(devDir, "summary_stats")
 if (!dir.exists(outDir)){
   dir.create(outDir)
 }
 
+#Nathan outputs directory (i.e. data in)
+if(computing == "local") {
+  #devDir <- here::here('data', 'derived')
+} else if(computing == "cyverse") {
+  natOut <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/nathan_outputs"
+}
+
 
 #Load data
-fireInsects <- terra::rast(file.path(devDir, "fire_and_insects.tif"))
-fireStack <- terra::rast(file.path(devDir, 'fire_dist_stack_west.tif'))
-# insectStack <- terra::rast(file.path(devDir, 'insect_dist_stack_west.tif'))
+
+#Individual disturbance stacks
+fireStackF <- file.path(devDir, 'fire_dist_stack_west.tif')
+insectStackF <- file.path(devDir, 'insect_dist_stack_west.tif')
+droughtStackF <- file.path(devDir, 'drought_stack.tif')
+
+#Individual disturbance 5yr moving windows
+beetle5yrF <- list.files(file.path(natOut), pattern = "beetle_totals", full.names = TRUE)
+disturbance5yrF <- list.files(file.path(natOut), pattern = "disturbance_totals", full.names = TRUE)
+drought5yrF <- list.files(file.path(natOut), pattern = "drought_totals", full.names = TRUE)
+fire5yrF <- list.files(file.path(natOut), pattern = "fire_totals", full.names = TRUE)
+
+#Disturbance combinatiosn 5yr moving windows
+fireDrought5yrF <- list.files(file.path(natOut, "fire-dought"), pattern = "fire_drought_totals", full.names = TRUE)
+fireBeetle5yrF <- list.files(file.path(natOut, "fire-beetle"), pattern = "fire_beetle_totals", full.names = TRUE)
+droughtBeetle5yrF <- list.files(file.path(natOut, "drought-beetle"), pattern = "bettle_drought_totals", full.names = TRUE)
+
+
+
+
+#Load ecoregion & forest data
 nameJoin <- readr::read_csv(file.path(devDir, "epal3l4_name_join.csv")) #EPA ecoregion distinct name table for joins (from script 00_ForestStats.rmd)
 forestL4Stats <- readr::read_csv(file.path(devDir, "forest_l4_dats.csv")) #EPA ecoregion stats on amount of forest (from script 00_ForestStats.rmd)
 forestL3Stats <- readr::read_csv(file.path(devDir, "forest_l3_dats.csv")) #EPA ecoregion stats on amount of forest (from script 00_ForestStats.rmd
 
-#Load EPA ecoregion data from ecoregions package
-epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
-  sf::st_transform(terra::crs(fireInsects))
-epaL4 <- ecoregions::ContinentalUsEcoregion4 %>% 
-  sf::st_transform(terra::crs(fireInsects))
+
 
 ```
+
+
 
 # Set the areas of interest
 
-```{r}
+```{r aoi}
+# 
+# pull.aoi.data <- function(useCrs) {
+#   #Load EPA ecoregion data from ecoregions package
+#   epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
+#     sf::st_transform(useCrs)
+#   epaL4 <- ecoregions::ContinentalUsEcoregion4 %>% 
+#     sf::st_transform(useCrs)
+#   
+#   #Pull in state data as context
+#   usa <- tigris::states() |>
+#     sf::st_transform(useCrs)
+#   west <- usa[usa$STUSPS %in% c("WA", "OR", "CA", "ID", "MT", "WY", "NV", "AZ", "CO", "NM", "UT"),] 
+#   
+#   #EPA level 3 AOI
+#   aoiL3Interest <- epaL3 |>
+#     dplyr::group_by(us_l3name) |>
+#     dplyr::summarize(geometry = st_union(geometry)) |>
+#     dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name)) |>
+#     sf::st_filter(west)
+#   
+#   #EPA level 4 AOI, only including L4 ecoregions in the L3 ecoregions of interest
+#   aoiL4Interest <- epaL4 |>
+#     group_by(us_l4name, us_l3name) |>
+#     summarize(geometry = st_union(geometry)) |>
+#     left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
+#     dplyr::filter(us_l3name %in% aoiL3Interest$us_l3name)
+# }
 
-#Pull in state data as context
-usa <- tigris::states() |>
-  sf::st_transform(terra::crs(fireInsects))
-west <- usa[usa$STUSPS %in% c("WA", "OR", "CA", "ID", "MT", "WY", "NV", "AZ", "CO", "NM", "UT"),] 
-
-#EPA level 3 AOI
-aoiL3Interest <- epaL3 |>
-  dplyr::group_by(us_l3name) |>
-  dplyr::summarize(geometry = st_union(geometry)) |>
-  dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name)) |>
-  sf::st_filter(west)
-
-#EPA level 4 AOI, only including L4 ecoregions in the L3 ecoregions of interest
-aoiL4Interest <- epaL4 |>
-  group_by(us_l4name, us_l3name) |>
-  summarize(geometry = st_union(geometry)) |>
-  left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
-  dplyr::filter(us_l3name %in% aoiL3Interest$us_l3name)
 
 
 ```
+
+```{r}
+
+all <- list(disturbance5yrF,
+            drought5yrF,
+            fire5yrF,
+            beetle5yrF,
+            fireBeetle5yrF,
+            fireDrought5yrF,
+            droughtBeetle5yrF)
+
+get.l3.freqs <- function(nms) {
+  
+  #Create raster
+  x <- terra::rast(nms)
+  useCrs <- terra::crs(x)
+  
+  #Load EPA ecoregion data from ecoregions package
+  epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
+    sf::st_transform(useCrs)
+  # epaL4 <- ecoregions::ContinentalUsEcoregion4 %>% 
+  #   sf::st_transform(useCrs)
+  
+  #Pull in state data as context
+  usa <- tigris::states() |>
+    sf::st_transform(useCrs)
+  west <- usa[usa$STUSPS %in% c("WA", "OR", "CA", "ID", "MT", "WY", "NV", "AZ", "CO", "NM", "UT"),] 
+  
+  #EPA level 3 AOI
+  aoiL3Interest <- epaL3 |>
+    dplyr::group_by(us_l3name) |>
+    dplyr::summarize(geometry = st_union(geometry)) |>
+    dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name)) |>
+    sf::st_filter(west)
+  
+  # #EPA level 4 AOI, only including L4 ecoregions in the L3 ecoregions of interest
+  # aoiL4Interest <- epaL4 |>
+  #   group_by(us_l4name, us_l3name) |>
+  #   summarize(geometry = st_union(geometry)) |>
+  #   left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
+  #   dplyr::filter(us_l3name %in% aoiL3Interest$us_l3name)
+  
+  
+  freqs <- x |> terra::freq(bylayer = TRUE, usenames = TRUE, zones = terra::vect(aoiL3Interest), wide = TRUE)
+  
+  return(freqs)
+}
+
+tic('Run freqs for all rasters')
+freqsAll <- all |> furrr::future_map(.f = get.l3.freqs, .options = furrr_options(seed = TRUE))
+toc()
+
+t <- list(all[[1]], all[[2]]) |> purrr::map(.f = get.l3.freqs)
+
+
+```
+
+
 
 ```{r}
 
 #Get zonal stats
-fireInsectL4 <- fireInsects |>
-  terra::zonal(z = terra::vect(aoiL3Interest), fun = "sum", na.rm = TRUE, touches = FALSE) #using ~30gb ram at highest
-x <- aoiL3Interest |> cbind(fireInsectL4)
-
-fireInsectL4_2 <- fireInsects |>
-  terra::freq(bylayer = TRUE, usenames = TRUE, zones = terra::vect(aoiL3Interest), wide = TRUE)
-
 
 
 #testing
@@ -148,15 +235,6 @@ test <- aoiL4Interest |>
   dplyr::filter(us_l4name == "Foothill Potholes" | us_l4name == "Western Beaverhead Mountains")
 
 
-tic('Single layer zonal')
-t1 <- fireInsects |>
-  terra::zonal(z = terra::vect(test), fun = "sum", na.rm = TRUE, touches = FALSE)
-toc()
-
-tic('Multi-layer zonal')
-t2 <- fireStack |>
-  terra::zonal(z = terra::vect(test), fun = "sum", na.rm = TRUE, touches = FALSE, wide = TRUE)
-toc()
 
 
 tic('Single layer freq')
