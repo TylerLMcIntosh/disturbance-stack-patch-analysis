@@ -1,0 +1,285 @@
+Run spatial statistics on disturbance stack
+
+Tyler L. McIntosh
+CU Boulder CIRES Earth Lab
+Last updated: 1/24/24
+
+This script uses the following naming conventions wherever possible:
+ lowerCamelCase for variables
+ period.separated for functions
+ underscore_separated for files
+
+
+# SETUP WORKSPACE
+User-set global parameters
+Directory management
+Package management
+
+```{r setup, echo = FALSE, warning = FALSE, message = FALSE}
+
+rm(list=ls()) #Ensure empty workspace if running from beginning
+
+#################################################
+#####EVERYTHING HERE SHOULD BE SET MANUALLY######
+#################################################
+
+computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
+nCores <- 4 #Number of cores available
+
+#################################################
+
+# Directory management ----
+require(here)
+
+#Set here location
+here::i_am("code/02_summary_stats.qmd")
+
+#Set directories
+if(computing == "local") {
+  home <- here::here()
+} else if(computing == "cyverse") {
+  home <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis"
+}
+
+#Raw data
+rawDir <- file.path(home, 'data/raw')
+
+#Nathan outputs directory
+natOut <- file.path(home, 'data/nathan_outputs')
+
+#Derived data (outdirectory)
+devDir <- file.path(home, 'data/derived')
+if (!dir.exists(devDir)){
+  dir.create(devDir)
+}
+
+#Specific derived data directory for this script's outputs
+outDir <- file.path(devDir, "summary_stats")
+if (!dir.exists(outDir)){
+  dir.create(outDir)
+}
+
+# Package management ----
+
+source(here::here('code/functions.R'), local = FALSE)
+
+#Check the required libraries and download if needed
+packageList <- c(
+  "tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr, forcats
+  "terra", #New raster data package, documentation pdf here: https://cran.r-project.org/web/packages/terra/terra.pdf
+  "future", "future.apply", "furrr", "doFuture", "progressr", #Futureverse! https://www.futureverse.org/packages-overview.html; https://henrikbengtsson.github.io/course-stanford-futureverse-2023/
+  "sf", #New vector data package
+  #"mapview", #For quick interactive mapping
+  "here", #Relative path best practices
+  "tictoc", #time running of processes
+  "glue", #easy strings
+  "tigris", #state polygons
+  "ggpmisc"  #For adding R^2 to plots
+)
+
+install.and.load.packages(packageList, autoInstall = "y")
+
+#Start parallel computing ----
+#Set cores
+if(computing == "local") {
+  nCores <- future::availableCores() - 1
+} else if(computing == "cyverse") {
+  cat("Using user-defined number of computing cores:", nCores)
+}
+future::plan("multisession", workers = nCores)
+
+```
+
+
+
+
+# Load data and manage data paths
+
+```{r load-data, echo = FALSE}
+
+#Load data
+
+#Individual disturbance stacks
+fireStackF <- file.path(devDir, 'fire_dist_stack_west.tif')
+insectStackF <- file.path(devDir, 'insect_dist_stack_west.tif')
+droughtStackF <- file.path(devDir, 'drought_dist_stack_west.tif')
+
+#Individual disturbance sums
+fireSumsF <- file.path(natOut, 'beetle_stack.tif')
+beetleSumsF <- file.path(natOut, 'fire_stack.tif')
+droughtSumsF <- file.path(natOut, 'drought_stack.tif')
+
+#Individual disturbance 5yr moving windows
+beetle5yrF <- list.files(file.path(natOut), pattern = "beetle_totals", full.names = TRUE)
+disturbance5yrF <- list.files(file.path(natOut), pattern = "disturbance_totals", full.names = TRUE)
+drought5yrF <- list.files(file.path(natOut), pattern = "drought_totals", full.names = TRUE)
+fire5yrF <- list.files(file.path(natOut), pattern = "fire_totals", full.names = TRUE)
+
+#Disturbance combination 5yr moving windows
+fireDrought5yrF <- list.files(file.path(natOut, "fire-dought"), pattern = "fire_drought_totals", full.names = TRUE)
+fireBeetle5yrF <- list.files(file.path(natOut, "fire-beetle"), pattern = "fire_beetle_totals", full.names = TRUE)
+droughtBeetle5yrF <- list.files(file.path(natOut, "drought-beetle"), pattern = "bettle_drought_totals", full.names = TRUE)
+#fireBeetleDrought5yrF <- list.files(file.path(natOut, "FILL THIS OUT", pattern = "FILL THIS OUT", full.names = TRUE))
+
+
+
+#Load ecoregion & forest data
+nameJoin <- readr::read_csv(file.path(devDir, "epal3l4_name_join.csv")) #EPA ecoregion distinct name table for joins (from script 01)
+forestL4Stats <- readr::read_csv(file.path(devDir, "forest_l4_dats.csv")) #EPA ecoregion stats on amount of forest (from script 01)
+forestL3Stats <- readr::read_csv(file.path(devDir, "forest_l3_dats.csv")) #EPA ecoregion stats on amount of forest (from script 01)
+epaL3F <- file.path(rawDir, "us_eco_l3/us_eco_l3.shp")
+epaL4F <- file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp")
+
+```
+
+
+
+# Set the areas of interest
+
+```{r aoi}
+
+
+# 
+# pull.aoi.data <- function(useCrs) {
+#   #Load EPA ecoregion data from ecoregions package
+#   epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
+#     sf::st_transform(useCrs)
+#   epaL4 <- ecoregions::ContinentalUsEcoregion4 %>% 
+#     sf::st_transform(useCrs)
+#   
+#   #Pull in state data as context
+#   usa <- tigris::states() |>
+#     sf::st_transform(useCrs)
+#   west <- usa[usa$STUSPS %in% c("WA", "OR", "CA", "ID", "MT", "WY", "NV", "AZ", "CO", "NM", "UT"),] 
+#   
+#   #EPA level 3 AOI
+#   aoiL3Interest <- epaL3 |>
+#     dplyr::group_by(us_l3name) |>
+#     dplyr::summarize(geometry = st_union(geometry)) |>
+#     dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name)) |>
+#     sf::st_filter(west)
+#   
+#   #EPA level 4 AOI, only including L4 ecoregions in the L3 ecoregions of interest
+#   aoiL4Interest <- epaL4 |>
+#     group_by(us_l4name, us_l3name) |>
+#     summarize(geometry = st_union(geometry)) |>
+#     left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
+#     dplyr::filter(us_l3name %in% aoiL3Interest$us_l3name)
+# }
+
+```
+
+```{r}
+
+
+
+all <- list(fireStackF,
+            insectStackF,
+            droughtStackF,
+            fireSumsF,
+            beetleSumsF,
+            droughtSumsF,
+            disturbance5yrF,
+            drought5yrF,
+            fire5yrF,
+            beetle5yrF,
+            fireBeetle5yrF,
+            fireDrought5yrF,
+            droughtBeetle5yrF)
+
+
+
+get.l3.freqs <- function(nms) {
+  
+  #Create raster
+  x <- terra::rast(nms)
+  useCrs <- terra::crs(x)
+  
+
+  epaL3 <- sf::st_read(epaL3F) |>
+    sf::st_transform(useCrs)
+
+  
+  #Pull in state data as context
+  usa <- tigris::states() |>
+    sf::st_transform(useCrs)
+  west <- usa[usa$STUSPS %in% c("WA", "OR", "CA", "ID", "MT", "WY", "NV", "AZ", "CO", "NM", "UT"),] 
+  
+  #EPA level 3 AOI
+  aoiL3Interest <- epaL3 |>
+    dplyr::group_by(US_L3NAME) |>
+    dplyr::summarize(geometry = st_union(geometry)) |>
+    dplyr::mutate(US_L3NAMECLEAN = gsub(" ", "", US_L3NAME)) |>
+    sf::st_filter(west)
+  
+  #Get frequencies by ecoregion
+  freqs <- x |> terra::freq(bylayer = TRUE, usenames = TRUE, zones = terra::vect(aoiL3Interest), wide = TRUE)
+  return(freqs)
+}
+
+#Testing weird raster loading errors when using parallel
+test <- all |> furrr::future_map(.f = test.func, .options = furrr_options(seed = TRUE)) ###THIS THROWS AN ERROR IF IT'S THE FIRST TIME IT HAS  BEEN RUN ON THE DEPLOYMENT?!?!
+test <- all |> purrr::map(.f = test.func) ###BUT THEN THIS WILL WORK
+test <- all |> furrr::future_map(.f = test.func, .options = furrr_options(seed = TRUE)) ###AND THEN THIS WORKS?!?!
+
+
+
+tic('Run freqs for all rasters')
+freqsAll <- all |> furrr::future_map(.f = get.l3.freqs, .options = furrr_options(seed = TRUE))
+toc()
+
+
+#t <- list(all[[1]], all[[2]]) |> purrr::map(.f = get.l3.freqs)
+
+#RAM TESTING
+install.packages('peakRAM')
+library(peakRAM)
+
+peakRAM::peakRAM(
+t <- get.l3.freqs(disturbance5yrF)
+)
+
+fireD <- get.l3.freqs(fireStackF)
+
+#single test.func peak ram = 1.1mb
+#purrr test.func peak ram = 0.4mb
+#furrr test.func peak ram = 8.5mb
+#single get.l3.freqs -> crashes on CV, only appears to take up to 7GB max locally. Ramps up to 53GB on CV before 'abnormally terminated due to an unexpected crash'
+
+
+readr::write_csv(t, here::here(outDir, "disturbance_5_year_freqs.csv"))
+readr::write_csv(fireD, here::here(outDir, "fire_freqs.csv"))
+
+t <- list(all[[1]], all[[2]]) |> purrr::map(.f = get.l3.freqs)
+
+
+```
+
+
+
+```{r}
+
+#Get zonal stats
+
+
+#testing
+test <- aoiL4Interest |>
+  dplyr::filter(us_l4name == "Foothill Potholes" | us_l4name == "Western Beaverhead Mountains")
+
+
+
+
+tic('Single layer freq')
+t3 <- fireInsects |>
+  terra::freq(bylayer = TRUE, usenames = TRUE, zones = terra::vect(test), wide = TRUE)
+toc()
+
+tic('Multi-layer freq')
+t4 <- fireStack |>
+  terra::freq(bylayer = TRUE, usenames = TRUE, zones = terra::vect(test), wide = TRUE)
+toc()
+
+readr::write_csv(t, file.path(outDir, "fireStackFreqL3.csv"))
+
+
+```

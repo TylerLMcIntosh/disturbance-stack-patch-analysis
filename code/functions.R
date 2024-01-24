@@ -12,6 +12,8 @@
 
 # FUNCTIONS ----
 
+## GENERAL USE FUNCTIONS ----
+
 # A function to check and install packages provided to the function. Written in part by ChatGPT4.
 # PARAMETERS
 # packageList : a vector of packages used in the script, e.g. c("here", "dplyr")
@@ -97,10 +99,63 @@ install.and.load.packages <- function(packageList, autoInstall = "n") {
 # PARAMETERS
 # polys : a set of polygons as an sf object
 st.area.to.poly <- function(polys) {
+  
   out <- polys |>
     sf::st_area() |> #get area from sf package
     units::drop_units() %>%
     cbind(polys, .) |> #join to polygons
     dplyr::rename(stArea = `.`) #rename
+  
   return(out)
+  
 }
+
+# Function to substring from right
+# PARAMETERS 
+# str : a string
+# n : the number of characters to keep from right of string, as an integer
+substrRight <- function(str, n) {
+  
+  return (substr(str, nchar(str)-n+1, nchar(str)))
+  
+}
+
+
+# A function to test a function that has been set up to run in either sequence or parallel.
+# For use in troubleshooting functions written to parallelize using the futureverse, depending on what plan() has been set to,
+# e.g. with   if (is(future::plan() ,"sequential")) vs "multisession"
+# This function will reset future::plan() to the state before the function was run
+# PARAMETERS
+# fun = name of function as a string, e.g. "calculate.class.level.metrics"
+# ... = all parameters for running fun
+test.future.function <- function(fun, ...) {
+  
+  #Get current plan
+  initialPlan <- future::plan()
+  
+  #Test sequential version
+  print("SEQUENCE")
+  future::plan("sequential")
+  tic(glue::glue('Time to run function {fun} in sequence'))
+  sTest <- do.call(fun, list(...))
+  toc()
+  
+  #Test parallel version
+  print("PARALLEL")
+  future::plan("multisession", workers = nCores)
+  tic(glue::glue('Time to run function {fun} in parallel'))
+  pTest <- do.call(fun, list(...))
+  toc()
+  
+  #Check if outputs are identical
+  glue("Outputs identical? - {identical(sTest, pTest)}")
+  
+  #Reset plan to original
+  future::plan(initialPlan)
+  print(glue::glue("Plan reset"))
+  
+}
+
+
+## PROJECT-SPECIFIC FUNCTIONS ----
+

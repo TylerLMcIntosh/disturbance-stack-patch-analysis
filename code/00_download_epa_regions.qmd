@@ -9,7 +9,7 @@ This script uses the following naming conventions wherever possible:
  period.separated for functions
  underscore_separated for files
 
-# SETUP WORKSPACE
+# Setup workspace
 User-set global parameters
 Directory management
 Package management
