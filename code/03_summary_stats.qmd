@@ -214,12 +214,16 @@ if(computing == "local") {
 #Individual disturbance stacks
 fireStackF <- file.path(devDir, 'fire_dist_stack_west.tif')
 insectStackF <- file.path(devDir, 'insect_dist_stack_west.tif')
+<<<<<<< HEAD
 droughtStackF <- file.path(devDir, 'drought_dist_stack_west.tif')
 
 #Individual disturbance sums
 fireSumsF <- file.path(natOut, 'beetle_stack.tif')
 beetleSumsF <- file.path(natOut, 'fire_stack.tif')
 droughtSumsF <- file.path(natOut, 'drought_stack.tif')
+=======
+droughtStackF <- file.path(devDir, 'drought_stack.tif')
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
 
 #Individual disturbance 5yr moving windows
 beetle5yrF <- list.files(file.path(natOut), pattern = "beetle_totals", full.names = TRUE)
@@ -227,11 +231,19 @@ disturbance5yrF <- list.files(file.path(natOut), pattern = "disturbance_totals",
 drought5yrF <- list.files(file.path(natOut), pattern = "drought_totals", full.names = TRUE)
 fire5yrF <- list.files(file.path(natOut), pattern = "fire_totals", full.names = TRUE)
 
+<<<<<<< HEAD
 #Disturbance combination 5yr moving windows
 fireDrought5yrF <- list.files(file.path(natOut, "fire-dought"), pattern = "fire_drought_totals", full.names = TRUE)
 fireBeetle5yrF <- list.files(file.path(natOut, "fire-beetle"), pattern = "fire_beetle_totals", full.names = TRUE)
 droughtBeetle5yrF <- list.files(file.path(natOut, "drought-beetle"), pattern = "bettle_drought_totals", full.names = TRUE)
 fireBeetleDrought5yrF <- list.files(file.path(natOut, "FILL THIS OUT", pattern = "FILL THIS OUT", full.names = TRUE))
+=======
+#Disturbance combinatiosn 5yr moving windows
+fireDrought5yrF <- list.files(file.path(natOut, "fire-dought"), pattern = "fire_drought_totals", full.names = TRUE)
+fireBeetle5yrF <- list.files(file.path(natOut, "fire-beetle"), pattern = "fire_beetle_totals", full.names = TRUE)
+droughtBeetle5yrF <- list.files(file.path(natOut, "drought-beetle"), pattern = "bettle_drought_totals", full.names = TRUE)
+
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
 
 
 
@@ -243,6 +255,10 @@ epaL3F <- file.path(rawDir, "us_eco_l3/us_eco_l3.shp")
 epaL4F <- file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp")
 
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
 
 ```
 
@@ -251,6 +267,7 @@ epaL4F <- file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp")
 # Set the areas of interest
 
 ```{r aoi}
+<<<<<<< HEAD
 
 
 
@@ -283,12 +300,43 @@ epaL4F <- file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp")
 #     dplyr::filter(us_l3name %in% aoiL3Interest$us_l3name)
 # }
 
+=======
+# 
+# pull.aoi.data <- function(useCrs) {
+#   #Load EPA ecoregion data from ecoregions package
+#   epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
+#     sf::st_transform(useCrs)
+#   epaL4 <- ecoregions::ContinentalUsEcoregion4 %>% 
+#     sf::st_transform(useCrs)
+#   
+#   #Pull in state data as context
+#   usa <- tigris::states() |>
+#     sf::st_transform(useCrs)
+#   west <- usa[usa$STUSPS %in% c("WA", "OR", "CA", "ID", "MT", "WY", "NV", "AZ", "CO", "NM", "UT"),] 
+#   
+#   #EPA level 3 AOI
+#   aoiL3Interest <- epaL3 |>
+#     dplyr::group_by(us_l3name) |>
+#     dplyr::summarize(geometry = st_union(geometry)) |>
+#     dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name)) |>
+#     sf::st_filter(west)
+#   
+#   #EPA level 4 AOI, only including L4 ecoregions in the L3 ecoregions of interest
+#   aoiL4Interest <- epaL4 |>
+#     group_by(us_l4name, us_l3name) |>
+#     summarize(geometry = st_union(geometry)) |>
+#     left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
+#     dplyr::filter(us_l3name %in% aoiL3Interest$us_l3name)
+# }
+
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
 
 
 ```
 
 ```{r}
 
+<<<<<<< HEAD
 
 
 all <- list(fireStackF,
@@ -298,6 +346,9 @@ all <- list(fireStackF,
             beetleSumsF,
             droughtSumsF,
             disturbance5yrF,
+=======
+all <- list(disturbance5yrF,
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
             drought5yrF,
             fire5yrF,
             beetle5yrF,
@@ -305,6 +356,7 @@ all <- list(fireStackF,
             fireDrought5yrF,
             droughtBeetle5yrF)
 
+<<<<<<< HEAD
 
 
 
@@ -313,12 +365,15 @@ test.func <- function(nms) {
   return(names(x))
 }
 
+=======
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
 get.l3.freqs <- function(nms) {
   
   #Create raster
   x <- terra::rast(nms)
   useCrs <- terra::crs(x)
   
+<<<<<<< HEAD
   # #Load EPA ecoregion data from ecoregions package
   # epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
   #   sf::st_transform(useCrs)
@@ -326,6 +381,13 @@ get.l3.freqs <- function(nms) {
   # #   sf::st_transform(useCrs)
   epaL3 <- sf::st_read(epaL3F) |>
     sf::st_transform(useCrs)
+=======
+  #Load EPA ecoregion data from ecoregions package
+  epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
+    sf::st_transform(useCrs)
+  # epaL4 <- ecoregions::ContinentalUsEcoregion4 %>% 
+  #   sf::st_transform(useCrs)
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
   
   #Pull in state data as context
   usa <- tigris::states() |>
@@ -334,6 +396,7 @@ get.l3.freqs <- function(nms) {
   
   #EPA level 3 AOI
   aoiL3Interest <- epaL3 |>
+<<<<<<< HEAD
     dplyr::group_by(US_L3NAME) |>
     dplyr::summarize(geometry = st_union(geometry)) |>
     dplyr::mutate(US_L3NAMECLEAN = gsub(" ", "", US_L3NAME)) |>
@@ -350,10 +413,31 @@ test <- all |> purrr::map(.f = test.func) ###BUT THEN THIS WILL WORK
 test <- all |> furrr::future_map(.f = test.func, .options = furrr_options(seed = TRUE)) ###AND THEN THIS WORKS?!?!
 
 
+=======
+    dplyr::group_by(us_l3name) |>
+    dplyr::summarize(geometry = st_union(geometry)) |>
+    dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name)) |>
+    sf::st_filter(west)
+  
+  # #EPA level 4 AOI, only including L4 ecoregions in the L3 ecoregions of interest
+  # aoiL4Interest <- epaL4 |>
+  #   group_by(us_l4name, us_l3name) |>
+  #   summarize(geometry = st_union(geometry)) |>
+  #   left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
+  #   dplyr::filter(us_l3name %in% aoiL3Interest$us_l3name)
+  
+  
+  freqs <- x |> terra::freq(bylayer = TRUE, usenames = TRUE, zones = terra::vect(aoiL3Interest), wide = TRUE)
+  
+  return(freqs)
+}
+
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
 tic('Run freqs for all rasters')
 freqsAll <- all |> furrr::future_map(.f = get.l3.freqs, .options = furrr_options(seed = TRUE))
 toc()
 
+<<<<<<< HEAD
 
 #t <- list(all[[1]], all[[2]]) |> purrr::map(.f = get.l3.freqs)
 
@@ -375,6 +459,9 @@ fireD <- get.l3.freqs(fireStackF)
 
 readr::write_csv(t, here::here(outDir, "disturbance_5_year_freqs.csv"))
 readr::write_csv(fireD, here::here(outDir, "fire_freqs.csv"))
+=======
+t <- list(all[[1]], all[[2]]) |> purrr::map(.f = get.l3.freqs)
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
 
 
 ```
