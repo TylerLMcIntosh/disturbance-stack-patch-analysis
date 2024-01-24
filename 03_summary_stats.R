@@ -1,17 +1,4 @@
-Run spatial statistics on disturbance stack
-
-Tyler L. McIntosh
-CU Boulder CIRES Earth Lab
-Last updated: 1/18/24
-
-This script uses the following naming conventions wherever possible:
- lowerCamelCase for variables
- period.separated for functions
- underscore_separated for files
-
-# SET GLOBAL PARAMETERS
-
-```{r set-params}
+## ----set-params----------------------------------------------------------------------------------------------------------------------
 rm(list=ls()) #Ensure empty workspace if running from beginning
 
 #################################################
@@ -23,11 +10,9 @@ nCores <- 4
 
 #################################################
 
-```
-# SETUP 
-#Load packages etc
 
-```{r setup, echo = FALSE, warning = FALSE, message = FALSE}
+
+## ----setup, echo = FALSE, warning = FALSE, message = FALSE---------------------------------------------------------------------------
 # SETUP ----
 ## Libraries ----
 
@@ -49,89 +34,6 @@ packageList <- c(
 
 
 
-# Function to check and install packages. Autoinstall should be "y" or "n". "y" will install all required packages without asking the user for permission. "n" will ask permission from the user.
-install.and.load.packages <- function(packageList, autoinstall) {
-  missingCranPackages <- c()
-  missingGithubPackages <- c()
-
-  for (package in packageList) {
-    packageLoaded <- FALSE
-
-    # Check if the package is from GitHub
-    if (grepl("/", package)) {
-      packageName <- unlist(strsplit(package, "/"))[2]
-      packageLoaded <- require(packageName, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
-    } else {
-      packageLoaded <- require(package, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
-    }
-
-    # Mark as missing if not loaded
-    if (!packageLoaded) {
-      if (grepl("/", package)) {
-        missingGithubPackages <- c(missingGithubPackages, package)
-      } else {
-        missingCranPackages <- c(missingCranPackages, package)
-      }
-    }
-  }
-
-  # Install missing CRAN packages
-  if (length(missingCranPackages) > 0) {
-    cat("The following CRAN packages are missing: ", paste(missingCranPackages, collapse = ", "), "\n")
-    if(autoinstall == "y") {
-      response <- "y"
-      cat("Installing the missing packages\n")
-    } else {
-      response <- readline(prompt = "\nDo you want to install the missing CRAN packages? (y/n): ")
-    }
-    if (tolower(response) == "y") {
-      install.packages(missingCranPackages)
-      for (package in missingCranPackages) {
-        require(package, character.only = TRUE)
-      }
-    } else {
-      cat("Skipping installation of missing CRAN packages.\n")
-    }
-  }
-
-  # Ask to install the 'remotes' package if GitHub packages are missing and 'remotes' is not installed
-  if (length(missingGithubPackages) > 0 && !requireNamespace("remotes", quietly = TRUE)) {
-    if(autoinstall == "y") {
-      response <- "y"
-      cat("Installing 'remotes' package to install GitHub packages\n")
-    } else {
-      response <- readline(prompt = "\nDo you want to install the 'remotes' package? (It is required to install packages from GitHub) (y/n): ")
-    }
-    if (tolower(response) == "y") {
-      install.packages("remotes")
-    } else {
-      cat("Skipping installation of GitHub packages.\n")
-      missingGithubPackages <- c() # Clear the list of GitHub packages
-    }
-  }
-
-  # Install missing GitHub packages
-  if (length(missingGithubPackages) > 0) {
-    cat("The following GitHub packages are missing: ", paste(missingGithubPackages, collapse = ", "), "\n")
-    if(autoinstall == "y") {
-      response <- "y"
-      cat("Installing the missing packages\n")
-    } else {
-      response <- readline(prompt = "\nDo you want to install the missing GitHub packages? (y/n): ")
-    }    
-    if (tolower(response) == "y") {
-      for (package in missingGithubPackages) {
-        remotes::install_github(package)
-        packageName <- unlist(strsplit(package, "/"))[2]
-        require(packageName, character.only = TRUE)
-      }
-    } else {
-      cat("Skipping installation of missing GitHub packages.\n")
-    }
-  }
-
-  cat("All specified packages installed and loaded.\n")
-}
 
 
 install.and.load.packages(packageList, autoinstall = "y")
@@ -153,13 +55,9 @@ options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
 #Start futureverse parallel computing
 future::plan("multisession", workers = nCores)
 
-```
 
 
-
-# Load data and manage data paths
-
-```{r load, echo = FALSE}
+## ----load, echo = FALSE--------------------------------------------------------------------------------------------------------------
 
 
 #Set directories
@@ -180,7 +78,7 @@ if (!dir.exists(outDir)){
   dir.create(outDir)
 }
 
-#Nathan outputs directory
+#Nathan outputs directory (i.e. data in)
 if(computing == "local") {
   natOut <- here::here('data', 'nathan_outputs')
 } else if(computing == "cyverse") {
@@ -193,12 +91,7 @@ if(computing == "local") {
 #Individual disturbance stacks
 fireStackF <- file.path(devDir, 'fire_dist_stack_west.tif')
 insectStackF <- file.path(devDir, 'insect_dist_stack_west.tif')
-droughtStackF <- file.path(devDir, 'drought_dist_stack_west.tif')
-
-#Individual disturbance sums
-fireSumsF <- file.path(natOut, 'beetle_stack.tif')
-beetleSumsF <- file.path(natOut, 'fire_stack.tif')
-droughtSumsF <- file.path(natOut, 'drought_stack.tif')
+droughtStackF <- file.path(devDir, 'drought_stack.tif')
 
 #Individual disturbance 5yr moving windows
 beetle5yrF <- list.files(file.path(natOut), pattern = "beetle_totals", full.names = TRUE)
@@ -206,11 +99,11 @@ disturbance5yrF <- list.files(file.path(natOut), pattern = "disturbance_totals",
 drought5yrF <- list.files(file.path(natOut), pattern = "drought_totals", full.names = TRUE)
 fire5yrF <- list.files(file.path(natOut), pattern = "fire_totals", full.names = TRUE)
 
-#Disturbance combination 5yr moving windows
+#Disturbance combinatiosn 5yr moving windows
 fireDrought5yrF <- list.files(file.path(natOut, "fire-dought"), pattern = "fire_drought_totals", full.names = TRUE)
 fireBeetle5yrF <- list.files(file.path(natOut, "fire-beetle"), pattern = "fire_beetle_totals", full.names = TRUE)
 droughtBeetle5yrF <- list.files(file.path(natOut, "drought-beetle"), pattern = "bettle_drought_totals", full.names = TRUE)
-fireBeetleDrought5yrF <- list.files(file.path(natOut, "FILL THIS OUT", pattern = "FILL THIS OUT", full.names = TRUE))
+
 
 
 
@@ -223,16 +116,20 @@ epaL4F <- file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp")
 
 
 
-```
 
 
-
-# Set the areas of interest
-
-```{r aoi}
+## ----aoi-----------------------------------------------------------------------------------------------------------------------------
 
 
-
+# t <- rstac::stac("https://storage.googleapis.com/earthengine-stac/catalog/")
+# t <- rstac::stac("https://storage.googleapis.com/earthengine-stac/catalog/EPA/EPA_Ecoregions_2013_L3.json")
+# 
+# 
+# tt <- t |> rstac::collections()
+# 
+# ttt <- t |> rstac::get_request()
+# 
+# x <- rstac::assets_download("https://storage.googleapis.com/earthengine-stac/catalog/EPA/EPA_Ecoregions_2013_L3.json")
 
 # 
 # pull.aoi.data <- function(useCrs) {
@@ -264,27 +161,19 @@ epaL4F <- file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp")
 
 
 
-```
-
-```{r}
 
 
+## ------------------------------------------------------------------------------------------------------------------------------------
 
-all <- list(fireStackF,
-            insectStackF,
-            droughtStackF,
-            fireSumsF,
-            beetleSumsF,
-            droughtSumsF,
-            disturbance5yrF,
+
+
+all <- list(disturbance5yrF,
             drought5yrF,
             fire5yrF,
             beetle5yrF,
             fireBeetle5yrF,
             fireDrought5yrF,
             droughtBeetle5yrF)
-
-
 
 
 test.func <- function(nms) {
@@ -356,11 +245,9 @@ readr::write_csv(t, here::here(outDir, "disturbance_5_year_freqs.csv"))
 readr::write_csv(fireD, here::here(outDir, "fire_freqs.csv"))
 
 
-```
 
 
-
-```{r}
+## ------------------------------------------------------------------------------------------------------------------------------------
 
 #Get zonal stats
 
@@ -385,4 +272,4 @@ toc()
 readr::write_csv(t, file.path(outDir, "fireStackFreqL3.csv"))
 
 
-```
+

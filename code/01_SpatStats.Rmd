@@ -47,7 +47,7 @@ nCores <- 2 #number of cores if on CyVerse - future package struggles to read au
 ## Libraries ----
 
 #Check the required libraries and download if needed
-list.of.packages <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr, forcats
+packageList <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr, forcats
                       "terra", #New raster data package, documentation pdf here: https://cran.r-project.org/web/packages/terra/terra.pdf
                       "future", "future.apply", "furrr", "doFuture", "progressr", #Futureverse! https://www.futureverse.org/packages-overview.html; https://henrikbengtsson.github.io/course-stanford-futureverse-2023/
                       "sf", #New vector data package
@@ -58,25 +58,98 @@ list.of.packages <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr
                       "tmap",
                       "profvis",
                       "purrr",
-                      "glue", #easy strings
-                      "remotes", #to access github libraries
-                      "ggpmisc") #For adding R^2 to plots
+                      "glue")
 
-#Install all packages that aren't installed yet
-install.packages(setdiff(list.of.packages, rownames(installed.packages())))
 
-#Load all packages
-invisible(lapply(list.of.packages, library, character.only = TRUE)) #use 'invisible' to prevent output being displayed
-#If this line throws an error on cyverse, close R session and re-open
+# Function to check and install packages. Autoinstall should be "y" or "n". "y" will install all required packages without asking the user for permission. "n" will ask permission from the user.
+install.and.load.packages <- function(packageList, autoinstall) {
+  missingCranPackages <- c()
+  missingGithubPackages <- c()
 
-#Install ecoregions package from github if needed, then load package
-if(!"ecoregions" %in% rownames(installed.packages())) {
-  remotes::install_github("tomroh/ecoregions")
+  for (package in packageList) {
+    packageLoaded <- FALSE
+
+    # Check if the package is from GitHub
+    if (grepl("/", package)) {
+      packageName <- unlist(strsplit(package, "/"))[2]
+      packageLoaded <- require(packageName, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
+    } else {
+      packageLoaded <- require(package, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
+    }
+
+    # Mark as missing if not loaded
+    if (!packageLoaded) {
+      if (grepl("/", package)) {
+        missingGithubPackages <- c(missingGithubPackages, package)
+      } else {
+        missingCranPackages <- c(missingCranPackages, package)
+      }
+    }
+  }
+
+  # Install missing CRAN packages
+  if (length(missingCranPackages) > 0) {
+    cat("The following CRAN packages are missing: ", paste(missingCranPackages, collapse = ", "), "\n")
+    if(autoinstall == "y") {
+      response <- "y"
+      cat("Installing the missing packages\n")
+    } else {
+      response <- readline(prompt = "\nDo you want to install the missing CRAN packages? (y/n): ")
+    }
+    if (tolower(response) == "y") {
+      install.packages(missingCranPackages)
+      for (package in missingCranPackages) {
+        require(package, character.only = TRUE)
+      }
+    } else {
+      cat("Skipping installation of missing CRAN packages.\n")
+    }
+  }
+
+  # Ask to install the 'remotes' package if GitHub packages are missing and 'remotes' is not installed
+  if (length(missingGithubPackages) > 0 && !requireNamespace("remotes", quietly = TRUE)) {
+    if(autoinstall == "y") {
+      response <- "y"
+      cat("Installing 'remotes' package to install GitHub packages\n")
+    } else {
+      response <- readline(prompt = "\nDo you want to install the 'remotes' package? (It is required to install packages from GitHub) (y/n): ")
+    }
+    if (tolower(response) == "y") {
+      install.packages("remotes")
+    } else {
+      cat("Skipping installation of GitHub packages.\n")
+      missingGithubPackages <- c() # Clear the list of GitHub packages
+    }
+  }
+
+  # Install missing GitHub packages
+  if (length(missingGithubPackages) > 0) {
+    cat("The following GitHub packages are missing: ", paste(missingGithubPackages, collapse = ", "), "\n")
+    if(autoinstall == "y") {
+      response <- "y"
+      cat("Installing the missing packages\n")
+    } else {
+      response <- readline(prompt = "\nDo you want to install the missing GitHub packages? (y/n): ")
+    }    
+    if (tolower(response) == "y") {
+      for (package in missingGithubPackages) {
+        remotes::install_github(package)
+        packageName <- unlist(strsplit(package, "/"))[2]
+        require(packageName, character.only = TRUE)
+      }
+    } else {
+      cat("Skipping installation of missing GitHub packages.\n")
+    }
+  }
+
+  cat("All specified packages installed and loaded.\n")
 }
-library(ecoregions)
 
 
-## Clean workspace & set up environment ----
+install.and.load.packages(packageList, autoinstall = "y")
+
+
+## CLEAN workspace & set up environment ----
 here::here() #Check here location
 if(computing == "local") {
   here::i_am("code/01_SpatStats.Rmd")
@@ -151,7 +224,11 @@ if(computing == "local") {
 } else if(computing == "cyverse") {
   devDir <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived"
 }
-
+if(computing == "local") {
+  rawDir <- here::here('data', 'raw')
+} else if(computing == "cyverse") {
+  rawDir <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/raw"
+}
 outDirT <- file.path(devDir, "metric_tables")
 if (!dir.exists(outDirT)){
   dir.create(outDirT)
@@ -161,14 +238,16 @@ if (!dir.exists(outDirT)){
 fireInsects <- terra::rast(file.path(devDir, "fire_and_insects.tif"))
 fireStack <- terra::rast(file.path(devDir, 'fire_dist_stack_west.tif'))
 insectStack <- terra::rast(file.path(devDir, 'insect_dist_stack_west.tif'))
+droughtStack <- terra::rast(file.path(devDir, 'drought_dist_stack_west.tif'))
 nameJoin <- readr::read_csv(file.path(devDir, "epal3l4_name_join.csv")) #EPA ecoregion distinct name table for joins (from script 00_ForestStats.rmd)
 forestL4Stats <- readr::read_csv(file.path(devDir, "forest_l4_dats.csv")) #EPA ecoregion stats on amount of forest (from script 00_ForestStats.rmd)
 forestL3Stats <- readr::read_csv(file.path(devDir, "forest_l3_dats.csv")) #EPA ecoregion stats on amount of forest (from script 00_ForestStats.rmd
 
 #Load EPA ecoregion data from ecoregions package
-epaL3 <- ecoregions::ContinentalUsEcoregion3 %>% 
+
+epaL3 <- sf::st_read(file.path(rawDir, "us_eco_l3/us_eco_l3.shp")) |>
   sf::st_transform(terra::crs(fireInsects))
-epaL4 <- ecoregions::ContinentalUsEcoregion4 %>% 
+epaL4 <- sf::st_read(file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp")) |> 
   sf::st_transform(terra::crs(fireInsects))
 
 ```
@@ -177,57 +256,57 @@ epaL4 <- ecoregions::ContinentalUsEcoregion4 %>%
 
 ```{r}
 
-if(!is.null(aoiL3Names)) {
-  #EPA level 3 AOI
-  aoiL3Interest <- epaL3 |>
-    dplyr::filter(us_l3name %in% aoiL3Names) |>
-    dplyr::group_by(us_l3name) |>
-    dplyr::summarize(geometry = st_union(geometry)) |>
-    dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name))
-  
-  #EPA level 4 AOI
-  aoiL4Interest <- epaL4 |>
-    dplyr::filter(us_l3name %in% aoiL3Names) |>
-    dplyr::group_by(us_l4name, us_l3name) |>
-    dplyr::summarize(geometry = st_union(geometry)) |>
-    dplyr::left_join(nameJoin, join_by(us_l3name, us_l4name))
-} else { #Auto-forest find
-
-  l3AboveForestPerc <- forestL3Stats |>
-    dplyr::filter(percForest >= forestPercCutoff) |>
-    dplyr::pull(us_l3nameclean)
-  l4AboveForestPerc <- forestL4Stats |>
-    dplyr::filter(percForest >= forestPercCutoff) |>
-    dplyr::pull(us_l4l3name)
-
-  #EPA level 3 AOI
-  aoiL3Interest <- epaL3 |>
-    dplyr::group_by(us_l3name) |>
-    dplyr::summarize(geometry = st_union(geometry)) |>
-    dplyr::mutate(us_l3nameclean = gsub(" ", "", us_l3name)) |>
-    dplyr::filter(us_l3nameclean %in% l3AboveForestPerc)
-  
-  #EPA level 4 AOI
-  aoiL4Interest <- epaL4 |>
-    dplyr::group_by(us_l4name, us_l3name) |>
-    dplyr::summarize(geometry = st_union(geometry)) |>
-    dplyr::left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
-    dplyr::filter(us_l4l3name %in% l4AboveForestPerc)
-}
+# if(!is.null(aoiL3Names)) {
+#   #EPA level 3 AOI
+#   aoiL3Interest <- epaL3 |>
+#     dplyr::filter(US_L3NAME %in% aoiL3Names) |>
+#     dplyr::group_by(US_L3NAME) |>
+#     dplyr::summarize(geometry = st_union(geometry)) |>
+#     dplyr::mutate(US_L3NAMECLEAN = gsub(" ", "", US_L3NAME))
+#   
+#   #EPA level 4 AOI
+#   aoiL4Interest <- epaL4 |>
+#     dplyr::filter(US_L3NAME %in% aoiL3Names) |>
+#     dplyr::group_by(US_L4NAME, US_L3NAME) |>
+#     dplyr::summarize(geometry = st_union(geometry)) |>
+#     dplyr::left_join(nameJoin, join_by(US_L3NAME, US_L4NAME))
+# } else { #Auto-forest find
+# 
+#   l3AboveForestPerc <- forestL3Stats |>
+#     dplyr::filter(percForest >= forestPercCutoff) |>
+#     dplyr::pull(US_L3NAMECLEAN)
+#   l4AboveForestPerc <- forestL4Stats |>
+#     dplyr::filter(percForest >= forestPercCutoff) |>
+#     dplyr::pull(US_L4L3NAME)
+# 
+#   #EPA level 3 AOI
+#   aoiL3Interest <- epaL3 |>
+#     dplyr::group_by(US_L3NAME) |>
+#     dplyr::summarize(geometry = st_union(geometry)) |>
+#     dplyr::mutate(US_L3NAMECLEAN = gsub(" ", "", US_L3NAME)) |>
+#     dplyr::filter(US_L3NAMECLEAN %in% l3AboveForestPerc)
+#   
+#   #EPA level 4 AOI
+#   aoiL4Interest <- epaL4 |>
+#     dplyr::group_by(US_L4NAME, US_L3NAME) |>
+#     dplyr::summarize(geometry = st_union(geometry)) |>
+#     dplyr::left_join(nameJoin, join_by(US_L3NAME, US_L4NAME)) |>
+#     dplyr::filter(US_L4L3NAME %in% l4AboveForestPerc)
+# }
 
 #Two small l4 ecoregions to test script
 test <- epaL4 |>
-  dplyr::group_by(us_l4name, us_l3name) |>
+  dplyr::group_by(US_L4NAME, US_L3NAME) |>
   dplyr::summarize(geometry = st_union(geometry)) |>
-  dplyr::left_join(nameJoin, join_by(us_l3name, us_l4name)) |>
-  #dplyr::filter(us_l4name == "Foothill Potholes" | us_l4name == "Western Beaverhead Mountains")
-  dplyr::filter(us_l4name == "Western Beaverhead Mountains")
+  dplyr::left_join(nameJoin, join_by(US_L3NAME, US_L4NAME)) |>
+  dplyr::filter(US_L4NAME == "Foothill Potholes" | US_L4NAME == "Western Beaverhead Mountains")
+  #dplyr::filter(US_L4NAME == "Western Beaverhead Mountains")
 
-
-test2 <- epaL3 |>
-  dplyr::group_by(us_l3name) |>
-  dplyr::summarize(geometry = st_union(geometry)) |>
-  dplyr::filter(us_l3name == "Southern Rockies")  
+# 
+# test2 <- epaL3 |>
+#   dplyr::group_by(US_L3NAME) |>
+#   dplyr::summarize(geometry = st_union(geometry)) |>
+#   dplyr::filter(US_L3NAME == "Southern Rockies")  
 
 ```
 
@@ -271,7 +350,7 @@ careful.clip <- function(raster, vector) {
 
 #Function to clip a raster to a set of polygons (one clip per polygon in set),
 #ensuring they are in the same projection
-#Namefield indicates the field to use to name the item in the returned list (e.g. "us_l4l3name")
+#Namefield indicates the field to use to name the item in the returned list (e.g. "US_L4L3NAME")
 #Returns the set of rasters as a named list 
 careful.clip.set <- function(raster, vectors, namefield) {
   if(nrow(vectors) == 1) {
@@ -280,21 +359,23 @@ careful.clip.set <- function(raster, vectors, namefield) {
   } else {
     splitVec <- split(vectors, f=vectors[[namefield]])
   }
-  future::plan("sequential")
+  #future::plan("sequential")
   if (is(future::plan() ,"sequential")) {
     print("Performing clip set in sequence")
     out <- splitVec |> purrr::map(careful.clip, raster = raster)
   } else { #Pack & parallelize
     print("Performing clip set in parallel")
-    r <- terra::wrap(raster)
+    #r <- terra::wrap(raster)
+    r <- terra::wrap(raster, proxy = TRUE)
     v <- splitVec |> 
       purrr::map(terra::vect) |> 
+      #purrr::map(terra::wrap)
       purrr::map(terra::wrap)
     out <- v |> furrr::future_map(careful.clip, raster = r)
     out <- out |>
       purrr::map(terra::unwrap)
   }
-  future::plan("multisession", workers = nCores)
+  #future::plan("multisession", workers = nCores)
   return(out)
 }
 
@@ -331,8 +412,8 @@ add.region.to.metric.df <- function(df, nm) {
   #Add region name & level to dataframe
   out <- df |>
     dplyr::mutate(region = nm,
-                  epaLevel = dplyr::case_when(region %in% nameJoin$us_l3nameclean ~ "epaL3",
-                                              region %in% nameJoin$us_l4l3name ~ "epaL4"))
+                  epaLevel = dplyr::case_when(region %in% nameJoin$US_L3NAMECLEAN ~ "epaL3",
+                                              region %in% nameJoin$US_L4L3NAME ~ "epaL4"))
   return(out)
 }
 
@@ -546,8 +627,8 @@ generate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
     stop("'setNm' cannot contain an underscore")
   }
   #If the aoi set is for epa l4 ecoregions, process appropriately and do both class and patch metrics
-  if("us_l4l3name" %in% names(aoiSet)) {
-    clippedRasterList <- careful.clip.set(raster, aoiSet, "us_l4l3name")
+  if("US_L4L3NAME" %in% names(aoiSet)) {
+    clippedRasterList <- careful.clip.set(raster, aoiSet, "US_L4L3NAME")
     # classMetrics <- clippedRasterList |>
     #    calculate.class.level.metrics()
     # classMetrics %>%
@@ -557,7 +638,7 @@ generate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
     patchMetrics %>%
        purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
   } else { #If L3, only do class metrics
-    clippedRasterList <- careful.clip.set(raster, aoiSet, "us_l3nameclean")
+    clippedRasterList <- careful.clip.set(raster, aoiSet, "US_L3NAMECLEAN")
     # classMetrics <- clippedRasterList |>
     #    calculate.class.level.metrics()
     # classMetrics %>%
@@ -588,9 +669,9 @@ tic("One-layer raster, parallel")
 testOut <- generate.raster.metrics.for.aoi.set(fireInsects, test, setNm = "testSingle")
 toc() #15.87 seconds total
 
-tic("One-layer raster, parallel")
+tic("Multi-layer raster, parallel")
 # testOut <- generate.raster.metrics.for.aoi.set(fireInsects, test, setNm = "test_normal")
-testOut <- generate.raster.metrics.for.aoi.set(fireStack, test, setNm = "testSingle")
+testOut <- generate.raster.metrics.for.aoi.set(fireStack, test, setNm = "testMulti")
 toc() #149 seconds total, 2.5 min
 
 tic("One-layer raster, parallel")
@@ -612,20 +693,20 @@ toc() #1831 seconds total, 30 min
 
 
 # 
-# #fireInsectInterestList <- careful.clip.set(fireInsects, aoiL3Interest, us_l3nameclean)
+# #fireInsectInterestList <- careful.clip.set(fireInsects, aoiL3Interest, US_L3NAMECLEAN)
 # 
 # 
-# test.future.function('careful.clip.set', fireInsects, aoiL4Interest[6:8,], "us_l4l3name")
+# test.future.function('careful.clip.set', fireInsects, aoiL4Interest[6:8,], "US_L4L3NAME")
 # 
 # 
 # 
 # tic("sequential")
-# fireInsectTestList <- careful.clip.set(fireInsects, aoiL4Interest[1:2,], "us_l4l3name")
+# fireInsectTestList <- careful.clip.set(fireInsects, aoiL4Interest[1:2,], "US_L4L3NAME")
 # toc()
 # 
 # 
 # 
-# fireTestList <- careful.clip.set(fireStack, aoiL4Interest[1:2,], "us_l4l3name")
+# fireTestList <- careful.clip.set(fireStack, aoiL4Interest[1:2,], "US_L4L3NAME")
 # 
 # 
 # 

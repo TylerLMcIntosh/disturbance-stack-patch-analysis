@@ -1,0 +1,175 @@
+Get forest area in each L3 and L4 ecoregion in the same reigon as the disturbance stack
+
+Tyler L. McIntosh
+CU Boulder CIRES Earth Lab
+Last updated: 1/24/23
+
+This script uses the following naming conventions wherever possible:
+ lowerCamelCase for variables
+ period.separated for functions
+ underscore_separated for files
+
+
+# SETUP WORKSPACE
+User-set global parameters
+Directory management
+Package management
+
+```{r setup, echo = FALSE, warning = FALSE, message = FALSE}
+
+rm(list=ls()) #Ensure empty workspace if running from beginning
+
+#################################################
+#####EVERYTHING HERE SHOULD BE SET MANUALLY######
+#################################################
+
+computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
+
+#################################################
+
+# Directory management ----
+require(here)
+
+#Set here location
+here::i_am("code/01_ecoregion_forest_stats.qmd")
+
+#Set directories
+if(computing == "local") {
+  home <- here::here()
+} else if(computing == "cyverse") {
+  home <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis"
+}
+
+#Raw data
+rawDir <- file.path(home, 'data/raw')
+if (!dir.exists(rawDir)){
+  dir.create(rawDir)
+}
+#Derived data (outdirectory)
+devDir <- file.path(home, 'data/derived')
+if (!dir.exists(devDir)){
+  dir.create(devDir)
+}
+
+# Package management ----
+
+source(here::here('code/functions.R'), local = FALSE)
+
+#Check the required libraries and download if needed
+packageList <- c("tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr, forcats
+                      "terra", #New raster data package, documentation pdf here: https://cran.r-project.org/web/packages/terra/terra.pdf
+                      "future", "future.apply", "furrr", "doFuture", "progressr", #Futureverse! https://www.futureverse.org/packages-overview.html; https://henrikbengtsson.github.io/course-stanford-futureverse-2023/
+                      "sf", #New vector data package
+                      #"mapview", #For quick interactive mapping
+                      "landscapemetrics",  #Fragstats for R
+                      "tictoc", #time running of processes
+                      "tmap",
+                      "units",
+                      "tigris", #census data
+                      "glue", #easy strings
+                      "ggpmisc") #For adding R^2 to plots
+
+install.and.load.packages(packageList, autoInstall = "y")
+
+```
+
+
+
+# Load data and manage data paths
+
+```{r load-data, echo = FALSE}
+#Load data
+fMask <- terra::rast(file.path(rawDir, 'landfire-bps-derived-forest-mask.tif'))
+
+
+#Load EPA ecoregion data (downloaded by script 00)
+epaL3 <- sf::st_read(file.path(rawDir, "us_eco_l3/us_eco_l3.shp")) |> 
+  sf::st_transform(terra::crs(fMask))
+epaL4 <- sf::st_read(file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp")) |> 
+  sf::st_transform(terra::crs(fMask))
+
+  
+#EPA ecoregion distinct name table for joins
+nameJoin <- cbind(epaL4$US_L4NAME, 
+                  gsub(" ", "", epaL4$US_L4NAME),
+                  epaL4$US_L3NAME,
+                  gsub(" ", "", epaL4$US_L3NAME)) |>
+  `colnames<-`(c('US_L4NAME', 'US_L4NAMECLEAN', 'US_L3NAME', 'US_L3NAMECLEAN')) |>
+  as.data.frame() |>
+  dplyr::distinct() |>
+  dplyr::mutate(US_L4L3NAME = glue::glue("{US_L4NAMECLEAN}{US_L3NAMECLEAN}"))
+
+#Write out for use in other scripts
+readr::write_csv(nameJoin, file.path(devDir, "epal3l4_name_join.csv"))
+
+```
+
+# Set the areas of interest to be the western US
+
+```{r}
+
+#Pull in state data as context
+usa <- tigris::states() |>
+  sf::st_transform(terra::crs(fMask))
+west <- usa[usa$STUSPS %in% c("WA", "OR", "CA", "ID", "MT", "WY", "NV", "AZ", "CO", "NM", "UT"),] 
+
+#EPA level 3 AOI
+aoiL3Interest <- epaL3 |>
+  dplyr::group_by(US_L3NAME) |>
+  dplyr::summarize(geometry = st_union(geometry)) |>
+  dplyr::mutate(US_L3NAMECLEAN = gsub(" ", "", US_L3NAME)) |>
+  sf::st_filter(west)
+
+#EPA level 4 AOI, only including L4 ecoregions in the L3 ecoregions of interest
+aoiL4Interest <- epaL4 |>
+  group_by(US_L4NAME, US_L3NAME) |>
+  summarize(geometry = st_union(geometry)) |>
+  left_join(nameJoin, join_by(US_L3NAME, US_L4NAME)) |>
+  dplyr::filter(US_L3NAME %in% aoiL3Interest$US_L3NAME)
+
+
+```
+
+# Perform computations on forest mask layer to get per/forest stats
+
+```{r}
+
+#Get total area of each L4 zone of interest
+aoiL4Interest <- aoiL4Interest |>
+  st.area.to.poly() |> #see functions.R
+  dplyr::mutate(areaHa = stArea * 0.0001) #Convert to be hectares
+
+
+
+#Get zonal stats
+terraOptions(memfrac = 0.8) #Allow terra to use more memory
+forestL4 <- fMask |>
+  terra::zonal(z = terra::vect(aoiL4Interest), fun = "sum", na.rm = TRUE, touches = FALSE)
+terraOptions(memfrac = 0.6)
+
+#Create dataframes
+forestL4Stats <- forestL4 |>
+  cbind(aoiL4Interest$US_L4L3NAME, aoiL4Interest$areaHa) |>
+  `names<-`(c("forestPix", "US_L4L3NAME", "areaHa")) |>
+  dplyr::mutate(forestAreaHa = forestPix * 900 * 0.0001, #900m^2 / pixel, ha conversion .0001
+                percForest = 100 * (forestAreaHa / areaHa)) |> 
+  dplyr::left_join(nameJoin, by = join_by(US_L4L3NAME)) %>%
+  replace(is.na(.), 0)
+
+forestL3Stats <- forestL4Stats |>
+  dplyr::group_by(US_L3NAME, US_L3NAMECLEAN) |>
+  dplyr::summarise(forestPix = sum(forestPix),
+                   forestAreaHa = sum(forestAreaHa),
+                   areaHa = sum(areaHa)) |>
+  dplyr::mutate(percForest = 100 * (forestAreaHa / areaHa)) %>%
+  replace(is.na(.), 0)
+
+#Write out
+readr::write_csv(forestL4Stats, file.path(devDir, "forest_l4_dats.csv"))
+readr::write_csv(forestL3Stats, file.path(devDir, "forest_l3_dats.csv"))
+
+```
+
+
+
+

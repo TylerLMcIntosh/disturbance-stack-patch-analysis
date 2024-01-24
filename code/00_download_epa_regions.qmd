@@ -1,0 +1,107 @@
+Get EPA ecoregions data
+
+Tyler L. McIntosh
+CU Boulder CIRES Earth Lab
+Last updated: 1/24/24
+
+This script uses the following naming conventions wherever possible:
+ lowerCamelCase for variables
+ period.separated for functions
+ underscore_separated for files
+
+# SETUP WORKSPACE
+User-set global parameters
+Directory management
+Package management
+
+```{r setup, echo = FALSE, warning = FALSE, message = FALSE}
+
+rm(list=ls()) #Ensure empty workspace if running from beginning
+
+#################################################
+#####EVERYTHING HERE SHOULD BE SET MANUALLY######
+#################################################
+
+computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
+
+#################################################
+
+# Directory management ----
+require(here)
+
+#Set here location
+here::i_am("code/00_download_epa_regions.qmd")
+
+#Set directories
+if(computing == "local") {
+  home <- here::here()
+} else if(computing == "cyverse") {
+  home <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis"
+}
+
+#Raw data
+rawDir <- file.path(home, 'data/raw')
+if (!dir.exists(rawDir)){
+  dir.create(rawDir)
+}
+
+# Package management ----
+
+source(here::here('code/functions.R'), local = FALSE)
+
+#Check the required libraries and download if needed
+packageList <- c()
+
+install.and.load.packages(packageList, autoInstall = "y")
+
+```
+
+# Download EPA ecoregions data directly from URL
+
+```{r download-epa}
+#Avoid download timeout
+options(timeout = max(1000, getOption("timeout")))
+
+#URLs for downloads
+epaUrls <- c("https://gaftp.epa.gov/EPADataCommons/ORD/Ecoregions/us/us_eco_l3.zip",
+             "https://gaftp.epa.gov/EPADataCommons/ORD/Ecoregions/us/us_eco_l4.zip")
+destFiles <- file.path(rawDir, basename(epaUrls))
+
+#Download
+mapply(FUN = function(url, destfile) {download.file(url = url,
+                                          destfile = destfile,
+                                          mode = "wb")},
+       url = epaUrls,
+       destfile = destFiles)
+
+#Unzip downloaded files
+mapply(FUN = function(destfile, exdir) {unzip(zipfile = destfile,
+                                              files = NULL,
+                                              exdir = exdir)},
+       destfile = destFiles,
+       exdir = gsub(pattern = ".zip", replacement = "", x = destFiles))
+
+```
+
+#Acquire EPA ecoregions via VSIZIP/VSICURL (NOT USED IN THIS WORKFLOW)
+
+```{r}
+
+# require(glue)
+# require(sf)
+# 
+# test <- glue::glue(
+#   "/vsizip/vsicurl/", #magic remote connection
+#   "https://gaftp.epa.gov/EPADataCommons/ORD/Ecoregions/us/us_eco_l3.zip", #copied link to download location
+#   "/us_eco_l3.shp") |> #path inside zip file
+#   sf::st_read()
+# test2 <- glue::glue(
+#   "/vsizip/vsicurl/", #magic remote connection
+#   "https://gaftp.epa.gov/EPADataCommons/ORD/Ecoregions/us/us_eco_l4.zip", #copied link to download location
+#   "/us_eco_l4_no_st.shp") |> #path inside zip file
+#   sf::st_read()
+
+
+
+```
+
