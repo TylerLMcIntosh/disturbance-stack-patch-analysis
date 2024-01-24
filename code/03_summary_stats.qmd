@@ -11,17 +11,29 @@ This script uses the following naming conventions wherever possible:
 
 # SET GLOBAL PARAMETERS
 
+<<<<<<< HEAD
 ```{r set-params}
+=======
+```{r global}
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
 rm(list=ls()) #Ensure empty workspace if running from beginning
 
 #################################################
 #####EVERYTHING HERE SHOULD BE SET MANUALLY######
 #################################################
 
+<<<<<<< HEAD
 computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
 nCores <- 4
+=======
+computing <- "cyverse" #Sets computing location and file setup; "cyverse" or "local"
+nCores <- 8
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
 
 #################################################
+
+#Start futureverse parallel computing
+future::plan("multisession", workers = nCores)
 
 ```
 # SETUP 
@@ -169,20 +181,29 @@ if(computing == "local") {
 } else if(computing == "cyverse") {
   devDir <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived"
 }
+<<<<<<< HEAD
 if(computing == "local") {
   rawDir <- here::here('data', 'raw')
 } else if(computing == "cyverse") {
   rawDir <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/raw"
 }
+=======
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
 #Specific derived data directory
 outDir <- file.path(devDir, "summary_stats")
 if (!dir.exists(outDir)){
   dir.create(outDir)
 }
 
+<<<<<<< HEAD
 #Nathan outputs directory
 if(computing == "local") {
   natOut <- here::here('data', 'nathan_outputs')
+=======
+#Nathan outputs directory (i.e. data in)
+if(computing == "local") {
+  #devDir <- here::here('data', 'derived')
+>>>>>>> b4dbed11e3cdddc6ec2ab2f480716220ec7f4568
 } else if(computing == "cyverse") {
   natOut <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/nathan_outputs"
 }
