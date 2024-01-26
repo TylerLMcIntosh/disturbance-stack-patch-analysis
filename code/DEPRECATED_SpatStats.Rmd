@@ -309,7 +309,6 @@ test <- epaL4 |>
 #   dplyr::filter(US_L3NAME == "Southern Rockies")  
 
 ```
-
 # Functions to create raster sets for AOIs
 
 ```{r}
@@ -383,6 +382,7 @@ careful.clip.set <- function(raster, vectors, namefield) {
 ```
 
 
+# HAVE COPIED OVER DOWN TO HERE
 
 
 # Functions to create csv files with data on landscape metrics for all regions in the AOI, EPA L4 & L3

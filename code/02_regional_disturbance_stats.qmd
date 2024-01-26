@@ -72,6 +72,7 @@ packageList <- c(
   "tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr, forcats
   "terra", #New raster data package, documentation pdf here: https://cran.r-project.org/web/packages/terra/terra.pdf
   "future", "future.apply", "furrr", "doFuture", "progressr", #Futureverse! https://www.futureverse.org/packages-overview.html; https://henrikbengtsson.github.io/course-stanford-futureverse-2023/
+  "parallelly", #some useful functions from 'future' were moved to 'parallelly' because they were helpful outside the future framework
   "sf", #New vector data package
   #"mapview", #For quick interactive mapping
   "tictoc", #time running of processes
@@ -101,6 +102,10 @@ future::plan("multisession", workers = nCores)
 #Load data
 
 #Data from Nathan ----
+
+fireInsectsF <- file.path(devDir, "fire_and_insects.tif")
+
+
 #Individual disturbance stacks
 fireStackF <- file.path(devDir, 'fire_dist_stack_west.tif')
 insectStackF <- file.path(devDir, 'insect_dist_stack_west.tif')
@@ -128,8 +133,8 @@ droughtBeetle5yrF <- list.files(file.path(natOut, "drought-beetle"), pattern = "
 nameJoin <- readr::read_csv(file.path(devDir, "epal3l4_name_join.csv")) #EPA ecoregion distinct name table for joins (from script 01)
 forestL4Stats <- readr::read_csv(file.path(devDir, "forest_l4_dats.csv")) #EPA ecoregion stats on amount of forest (from script 01)
 forestL3Stats <- readr::read_csv(file.path(devDir, "forest_l3_dats.csv")) #EPA ecoregion stats on amount of forest (from script 01)
-epaL3F <- file.path(rawDir, "us_eco_l3/us_eco_l3.shp")
-epaL4F <- file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp")
+epaL3 <- sf::st_read(file.path(rawDir, "us_eco_l3/us_eco_l3.shp"))
+epaL4 <- sf::st_read(file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp"))
 
 ```
 
@@ -165,11 +170,11 @@ test <- epaL4 |>
   dplyr::left_join(nameJoin, join_by(US_L3NAME, US_L4NAME)) |>
   dplyr::filter(US_L4NAME == "Foothill Potholes" | US_L4NAME == "Western Beaverhead Mountains")
 
-# test2 <- epaL4 |>
-#   dplyr::group_by(US_L4NAME, US_L3NAME) |>
-#   dplyr::summarize(geometry = st_union(geometry)) |>
-#   dplyr::left_join(nameJoin, join_by(US_L3NAME, US_L4NAME)) |>
-#   dplyr::filter(US_L3NAME == "SouthernRockies")
+test2 <- epaL4 |>
+  dplyr::group_by(US_L4NAME, US_L3NAME) |>
+  dplyr::summarize(geometry = st_union(geometry)) |>
+  dplyr::left_join(nameJoin, join_by(US_L3NAME, US_L4NAME)) |>
+  dplyr::filter(US_L3NAME == "Southern Rockies")
   
 ```
 
@@ -179,38 +184,33 @@ This function performs all operations on a given disturbance stack raster set, c
 
 ```{r}
 
-#Function to bring all of the above functions together
-#This function requires a set name (setNm) as a string, which clarifies what the input raster represents (e.g. "Fire"), and will be used in the output file names
-#Output files will be in OutDirT, in the form: "setNm_ecoregion_class/patch_epaLevel.csv"
-generate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
-  if(grepl("_", setNm)) {
-    stop("'setNm' cannot contain an underscore")
+# Output files will be in outDir, in the form: "setNm_ecoregion_epaLevel_patchstats.csv" and "setNm_ecoregion_epaLevel_summarystats.csv"
+# PARAMETERS
+# rasterFileName : the name (or names) of files to read into terra::rast()
+# aoiSet :  a set of polygons (as an sf object) for which to calculate metrics within.
+# setNm : a string, which clarifies what the input raster represents (e.g. "Fire"), and will be used in the output file names.
+calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm) {
+  #Do not allow set names with underscores or spaces
+  if(grepl("_", setNm) | grepl(" ", setNm) ) {
+    stop("'setNm' cannot contain underscores or spaces")
   }
-  #If the aoi set is for epa l4 ecoregions, process appropriately and do both class and patch metrics
-  if("US_L4L3NAME" %in% names(aoiSet)) {
-    clippedRasterList <- careful.clip.set(raster, aoiSet, "US_L4L3NAME")
-    # classMetrics <- clippedRasterList |>
-    #    calculate.class.level.metrics()
-    # classMetrics %>%
-    #    purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
-    patchMetrics <- clippedRasterList |>
-       calculate.patch.level.metrics()
-    patchMetrics %>%
-       purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
-  } else { #If L3, only do class metrics
-    clippedRasterList <- careful.clip.set(raster, aoiSet, "US_L3NAMECLEAN")
-    # classMetrics <- clippedRasterList |>
-    #    calculate.class.level.metrics()
-    # classMetrics %>%
-    #    purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
-    patchMetrics <- clippedRasterList |>
-       calculate.patch.level.metrics()
-    patchMetrics %>%
-       purrr::map2(.f = write.land.metric.csv.w.name, .y = names(.), dir = outDirT, set = setNm)
+  
+  spatRast <- terra::rast(rasterFileName)
+  
+  clippedRasterList <- careful.clip.set(raster = spatRast, vectors = aoiSet, namefield = "US_L4L3NAMECLEAN", mask = TRUE)
+  
+  return(clippedRasterList)
+}
+
+calculate.metrics.for.raster.aoi.set2 <- function(rasterFileName, aoiSet, setNm) {
+  #Do not allow set names with underscores or spaces
+  if(grepl("_", setNm) | grepl(" ", setNm) ) {
+    stop("'setNm' cannot contain underscores or spaces")
   }
-  gc()
-  # asTbl <- read.set.csvs.as.one(setNm)
-  # return(asTbl)
+  
+  clippedRasterList <- careful.clip.set2(raster = rasterFileName, vectors = aoiSet, namefield = "US_L4L3NAMECLEAN", mask = TRUE)
+  
+  return(clippedRasterList)
 }
 
 
@@ -223,15 +223,60 @@ generate.raster.metrics.for.aoi.set <- function(raster, aoiSet, setNm) {
 ```{r}
 
 
+
 tic("One-layer raster, parallel")
-testOut <- generate.raster.metrics.for.aoi.set(fireInsects, test, setNm = "testSingle")
-toc() #15.87 seconds total
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireInsectsF, aoiSet = test2, setNm = "testSingle")
+toc()
+#5 sec test (two)
+#3.83 sec test (two)
+#97.65 test2 (SR)
+#71.77 sec test2 (sr)
+#86.1 sec test2(sr)
 
 tic("Multi-layer raster, parallel")
-testOut <- generate.raster.metrics.for.aoi.set(fireStack, test, setNm = "testMulti")
-toc() #149 seconds total, 2.5 min
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireStackF, aoiSet = test2, setNm = "testMulti")
+toc()
+#8.45 sec
+#8.08 sec
 
 
+
+tic("One-layer raster, parallel, filenm")
+testOut <- calculate.metrics.for.raster.aoi.set2(rasterFileName = fireInsectsF, aoiSet = test2, setNm = "testSingle")
+toc()
+#4.43 sec
+#1.15 sec
+
+tic("Multi-layer raster, parallel, filenm")
+testOut <- calculate.metrics.for.raster.aoi.set2(rasterFileName = fireStackF, aoiSet = test2, setNm = "testMulti")
+toc()
+#5.12 sec
+#6.73 sec
+
+
+
+
+plan("sequential")
+tic("One-layer raster, seq")
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireInsectsF, aoiSet = test2, setNm = "testSingle")
+toc()
+#0.45 sec
+
+tic("Multi-layer raster, seq")
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireStackF, aoiSet = test2, setNm = "testMulti")
+toc()
+#8.11 sec
+
+plan("sequential")
+tic("One-layer raster, seq, filenm")
+testOut <- calculate.metrics.for.raster.aoi.set2(rasterFileName = fireInsectsF, aoiSet = test2, setNm = "testSingle")
+toc()
+#0.4 sec
+
+tic("Multi-layer raster, seq, filenm")
+testOut <- calculate.metrics.for.raster.aoi.set2(rasterFileName = fireStackF, aoiSet = test2, setNm = "testMulti")
+toc()
+#8.74 sec
 
 #APPLY OVER 'ALL' object
 

@@ -97,7 +97,7 @@ nameJoin <- cbind(epaL4$US_L4NAME,
   `colnames<-`(c('US_L4NAME', 'US_L4NAMECLEAN', 'US_L3NAME', 'US_L3NAMECLEAN')) |>
   as.data.frame() |>
   dplyr::distinct() |>
-  dplyr::mutate(US_L4L3NAME = glue::glue("{US_L4NAMECLEAN}{US_L3NAMECLEAN}"))
+  dplyr::mutate(US_L4L3NAMECLEAN = glue::glue("{US_L4NAMECLEAN}{US_L3NAMECLEAN}"))
 
 #Write out for use in other scripts
 readr::write_csv(nameJoin, file.path(devDir, "epal3l4_name_join.csv"))

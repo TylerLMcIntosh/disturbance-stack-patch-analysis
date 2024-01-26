@@ -156,6 +156,157 @@ test.future.function <- function(fun, ...) {
   
 }
 
+#Function to clip a raster to a vector, ensuring in same projection
+#Returns raster in original projection, but clipped to vector
+# PARAMETERS
+# raster : a SpatRaster or PackedSpatRaster object
+# vector : a SpatVector, PackedSpatVector or SF object
+# mask : TRUE or FALSE; whether terra::clip should mask the raster as well
+careful.clip <- function(raster, vector, mask) {
+  pack <- FALSE
+  
+  #Unpack if parallelized inputs
+  if(class(raster)[1] == "PackedSpatRaster") {
+    raster <- terra::unwrap(raster)
+    pack <- TRUE
+  }
+  if(class(vector)[1] == "PackedSpatVector") {
+    vector <- sf::st_as_sf(terra::unwrap(vector))
+  }
+  
+  #Perform operation
+  if (sf::st_crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
+    print("Projecting vector")
+    vector <- sf::st_transform(vector, terra::crs(raster)) 
+  } else {
+    print("Vector already in raster CRS")
+  }
+  print("Clipping")
+  r <- terra::crop(raster,
+                   vector,
+                   mask = TRUE) #crop & mask
+  
+  #Repack if was packed coming in (i.e. parallelized)
+  if(pack) {
+    r <- terra::wrap(r)
+  }
+  return(r)
+}
+
+
+#Function to clip a raster to a set of polygons (one clip per polygon in set)
+#Returns a set of clipped rasters as a named list
+#Works in either parallel or sequence, depending on what future::plan() has been set to
+# PARAMETERS
+# raster : a SpatRaster object
+# vector : an SF object
+# mask : TRUE or FALSE; whether terra::clip should mask the raster as well
+# namefield: indicates the vector field to use to name the item in the returned list (e.g. "US_L4L3NAMECLEAN")
+careful.clip.set <- function(raster, vectors, namefield, mask) {
+  #Split vectors into a list
+  if(nrow(vectors) == 1) {
+    splitVec <- list()
+    splitVec[[1]] <- vectors
+  } else {
+    splitVec <- split(vectors, f=vectors[[namefield]])
+  }
+  #Map over list of vectors and perform clip using careful.clip
+  if (is(future::plan() ,"sequential")) {
+    print("Performing clip set in sequence")
+    out <- splitVec |> purrr::map(careful.clip, raster = raster, mask = TRUE)
+  } else { #Pack & parallelize
+    print("Performing clip set in parallel")
+    r <- terra::wrap(raster, proxy = TRUE)
+    v <- splitVec |> 
+      purrr::map(terra::vect) |> 
+      purrr::map(terra::wrap)
+    out <- v |> furrr::future_map(careful.clip, raster = r, mask = TRUE)
+    out <- out |>
+      purrr::map(terra::unwrap)
+  }
+  return(out)
+}
+
+#Function to clip a raster to a vector, ensuring in same projection
+#Returns raster in original projection, but clipped to vector
+# PARAMETERS
+# raster : a SpatRaster or PackedSpatRaster object
+# vector : a SpatVector, PackedSpatVector or SF object
+# mask : TRUE or FALSE; whether terra::clip should mask the raster as well
+careful.clip2 <- function(raster, vector, mask) {
+  pack <- FALSE
+  
+  #Unpack if parallelized inputs
+  if(class(raster)[1] == "PackedSpatRaster") {
+    raster <- terra::unwrap(raster)
+    pack <- TRUE
+  }
+  if(class(vector)[1] == "PackedSpatVector") {
+    vector <- sf::st_as_sf(terra::unwrap(vector))
+  }
+  
+  #Create spatraster if filename
+  if(class(raster)[1] == "character") {
+    raster <- terra::rast(raster)
+  }
+  
+  #Perform operation
+  if (sf::st_crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
+    print("Projecting vector")
+    vector <- sf::st_transform(vector, terra::crs(raster)) 
+  } else {
+    print("Vector already in raster CRS")
+  }
+  print("Clipping")
+  r <- terra::crop(raster,
+                   vector,
+                   mask = TRUE) #crop & mask
+  
+  #Repack if was packed coming in (i.e. parallelized)
+  if(pack) {
+    r <- terra::wrap(r)
+  }
+  return(r)
+}
+
+
+#Function to clip a raster to a set of polygons (one clip per polygon in set)
+#Returns a set of clipped rasters as a named list
+#Works in either parallel or sequence, depending on what future::plan() has been set to
+# PARAMETERS
+# raster : a SpatRaster object
+# vector : an SF object
+# mask : TRUE or FALSE; whether terra::clip should mask the raster as well
+# namefield: indicates the vector field to use to name the item in the returned list (e.g. "US_L4L3NAMECLEAN")
+careful.clip.set2 <- function(raster, vectors, namefield, mask) {
+  #Split vectors into a list
+  if(nrow(vectors) == 1) {
+    splitVec <- list()
+    splitVec[[1]] <- vectors
+  } else {
+    splitVec <- split(vectors, f=vectors[[namefield]])
+  }
+  #Map over list of vectors and perform clip using careful.clip
+  if (is(future::plan() ,"sequential")) {
+    print("Performing clip set in sequence")
+    out <- splitVec |> purrr::map(careful.clip2, raster = raster, mask = TRUE)
+  } else { #Pack & parallelize
+    print("Performing clip set in parallel")
+    if(class(raster)[1] == "character") {
+      r <- raster
+    } else {
+      r <- terra::wrap(raster, proxy = TRUE)
+    }
+    v <- splitVec |> 
+      purrr::map(terra::vect) |> 
+      purrr::map(terra::wrap)
+    out <- v |> furrr::future_map(careful.clip2, raster = r, mask = TRUE)
+    out <- out |>
+      purrr::map(terra::unwrap)
+  }
+  return(out)
+}
+
 
 ## PROJECT-SPECIFIC FUNCTIONS ----
 
