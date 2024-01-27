@@ -23,8 +23,8 @@ rm(list=ls()) #Ensure empty workspace if running from beginning
 #####EVERYTHING HERE SHOULD BE SET MANUALLY######
 #################################################
 
-computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
-nCores <- 4 #Number of cores available - only necessary if on CyVerse (future package struggles to read automatically on CyVerse, reads 128 (the maximum number of cores)
+computing <- "cyverse" #Sets computing location and file setup; "cyverse" or "local"
+nCores <- 16 #Number of cores available - only necessary if on CyVerse (future package struggles to read automatically on CyVerse, reads 128 (the maximum number of cores)
 
 forestPercCutoff <- 1 #The percentage of forest below which EPA regions will not be retained for calculations
 edgeDepth <- 200 #the edge depth to use for all landscapemetrics 'core' caluclations, in meters
@@ -126,7 +126,7 @@ fire5yrF <- list.files(file.path(natOut), pattern = "fire_totals", full.names = 
 fireDrought5yrF <- list.files(file.path(natOut, "fire-dought"), pattern = "fire_drought_totals", full.names = TRUE)
 fireBeetle5yrF <- list.files(file.path(natOut, "fire-beetle"), pattern = "fire_beetle_totals", full.names = TRUE)
 droughtBeetle5yrF <- list.files(file.path(natOut, "drought-beetle"), pattern = "bettle_drought_totals", full.names = TRUE)
-#fireBeetleDrought5yrF <- list.files(file.path(natOut, "FILL THIS OUT", pattern = "FILL THIS OUT", full.names = TRUE))
+fireBeetleDrought5yrF <- list.files(file.path(natOut, "all-unique", pattern = "all_unique", full.names = TRUE))
 
 #Additional data
 #Load ecoregion & forest data
@@ -189,29 +189,131 @@ This function performs all operations on a given disturbance stack raster set, c
 # rasterFileName : the name (or names) of files to read into terra::rast()
 # aoiSet :  a set of polygons (as an sf object) for which to calculate metrics within.
 # setNm : a string, which clarifies what the input raster represents (e.g. "Fire"), and will be used in the output file names.
-calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm) {
+
+calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm) { 
   #Do not allow set names with underscores or spaces
   if(grepl("_", setNm) | grepl(" ", setNm) ) {
     stop("'setNm' cannot contain underscores or spaces")
   }
   
+  #Prep raster for parallel processing
   spatRast <- terra::rast(rasterFileName)
+  rWrap <- terra::wrap(spatRast, proxy = TRUE)
   
-  clippedRasterList <- careful.clip.set(raster = spatRast, vectors = aoiSet, namefield = "US_L4L3NAMECLEAN", mask = TRUE)
+
+  #Prep vectors for parallel processing: Split vectors into a wrapped list of spatVectors
+  if("US_L4L3NAMECLEAN" %in% names(aoiSet)) {
+    namefield <- "US_L4L3NAMECLEAN"
+    epaLvl <- "epaL4"
+  } else {
+    namefield <- "US_L3NAMECLEAN"
+    epaLvl <- "epaL3"
+  }
   
-  return(clippedRasterList)
+  splitVec <- aoiSet |>
+    sf.to.polygon.list(namefield = namefield) #from functions.R
+  
+  vs <- splitVec |> 
+    purrr::map(terra::vect) |> 
+    purrr::map(terra::wrap)
+  
+  #Run calculate raster metrics function in parallel
+  print('Starting parallel processing')
+  allDats <- vs |> furrr::future_map(~calculate.raster.metrics(rWrap = rWrap, aoi = .x), .options = furrr_options(seed = TRUE))
+  
+  #Add dataset grouping names to outputs
+  allDats <- purrr::map2(.x = allDats, .y = names(allDats), .f = ~add.data.aoi.nms(datSet = .x, aoiNm = .y, setNm = setNm, epaLevel = epaLvl))
+  
+  # Extract and bind together freqs and metrics dataframes
+  allFreqs <- allDats |> 
+    purrr::map(~ .x$freqs) |>  # Extract 'freqs' from each sublist
+    bind_rows()       # Combine all 'freqs' dataframes
+  allMetrics <- allDats |> 
+    purrr::map(~ .x$metrics) |>  # Extract 'metrics' from each sublist
+    bind_rows()       # Combine all 'metrics' dataframes
+  
+  #Return
+  out <- list(allFreqs, allMetrics)
+  names(out) <- c("freqs", "metrics")
+  return(out)
+  
 }
 
-calculate.metrics.for.raster.aoi.set2 <- function(rasterFileName, aoiSet, setNm) {
-  #Do not allow set names with underscores or spaces
-  if(grepl("_", setNm) | grepl(" ", setNm) ) {
-    stop("'setNm' cannot contain underscores or spaces")
-  }
+#A function to add aoi and data set names to the output tables
+add.data.aoi.nms <- function(datSet, aoiNm, setNm, epaLevel) {
+  out <- purrr::map(.x = datSet, .f = ~dplyr::mutate(.data = .x,
+                                                     dataNm = setNm,
+                                                     aoiNm = aoiNm,
+                                                     epaLevel = epaLevel))
   
-  clippedRasterList <- careful.clip.set2(raster = rasterFileName, vectors = aoiSet, namefield = "US_L4L3NAMECLEAN", mask = TRUE)
-  
-  return(clippedRasterList)
+  return(out)
 }
+
+#This function is meant to be run in parallel with a wrapped raster in rWrap
+calculate.raster.metrics <- function(rWrap, aoi) {
+  
+  #Clip the raster to the aoi sent to node
+  clippedR <- careful.clip(raster = terra::unwrap(rWrap), vector = unwrap(aoi), mask = TRUE)
+  
+  #Collect frequencies 
+  freqs <- clippedR |> terra::freq(bylayer = TRUE, usenames = TRUE, wide = TRUE)
+  
+  #Calculate patch metrics
+  metrics <- clippedR |>
+    calculate.lsm.with.names( #from functions.R, adds raster layer names as well
+      #full_name = TRUE, #NOTE: for some reason cyverse in parallel won't do full_names = TRUE in the function call, so have to do manually
+      directions = 8,
+      edge_depth = edgeDepth %/% resolution, #edge depth in pixels, without remainder
+      what = c(
+        'lsm_c_ai',
+        'lsm_p_area',
+        'lsm_p_cai',
+        'lsm_p_core',
+        'lsm_p_enn',
+        'lsm_p_para',
+        'lsm_p_shape',
+        'lsm_p_contig',
+        'lsm_p_circle'
+      )
+    ) |>
+    dplyr::left_join(landscapemetrics::lsm_abbreviations_names) #NOTE: for some reason cyverse in parallel won't do full_names = TRUE in the function call, so have to do manually
+  
+  #Return data and node ID
+  cat("Data coming back from node: ", Sys.getpid(), "\n")
+  
+  outputs <- list(freqs, metrics)
+  names(outputs) <- c("freqs", "metrics")
+  
+  return(outputs)
+  
+}
+
+
+
+
+# calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm) {
+#   #Do not allow set names with underscores or spaces
+#   if(grepl("_", setNm) | grepl(" ", setNm) ) {
+#     stop("'setNm' cannot contain underscores or spaces")
+#   }
+#   
+#   spatRast <- terra::rast(rasterFileName)
+#   
+#   clippedRasterList <- careful.clip.set(raster = spatRast, vectors = aoiSet, namefield = "US_L4L3NAMECLEAN", mask = TRUE)
+#   
+#   return(clippedRasterList)
+# }
+# 
+# calculate.metrics.for.raster.aoi.set2 <- function(rasterFileName, aoiSet, setNm) {
+#   #Do not allow set names with underscores or spaces
+#   if(grepl("_", setNm) | grepl(" ", setNm) ) {
+#     stop("'setNm' cannot contain underscores or spaces")
+#   }
+#   
+#   clippedRasterList <- careful.clip.set2(raster = rasterFileName, vectors = aoiSet, namefield = "US_L4L3NAMECLEAN", mask = TRUE)
+#   
+#   return(clippedRasterList)
+# }
 
 
 
@@ -223,18 +325,63 @@ calculate.metrics.for.raster.aoi.set2 <- function(rasterFileName, aoiSet, setNm)
 ```{r}
 
 
+plan(multisession, workers = nCores)
+tic("One-layer raster, parallel")
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireInsectsF, aoiSet = test2, setNm = "testSingle") #fireInsectsF, beetle5yrF
+toc()
+t <- testOut[[2]]
+view(t)
+
+
+###########################
+
+t <- rast(fireStackF)
+plot(t)
+
+t <- rast(beetle5yrF)
+v <- filter(test2, US_L4NAME == "Crystalline Mid-Elevation Forests")
+careful.clip(raster = t, vector = v, mask = TRUE)
+#CyV: up to 83 gb with beetle5yrF, Crystalline Mid-Elevation Forests, 289.37 seconds
+#Local: up to 9gb with beetle5yrF, Crystalline Mid-Elevation Forests
+
+t <- rast(fireStackF)
+v <- filter(test2, US_L4NAME == "Crystalline Mid-Elevation Forests")
+careful.clip(raster = t, vector = v)
+#up to 83 gb with beetle5yrF, Crystalline Mid-Elevation Forests, 289.37 seconds
+#local computer processed with beetle5yrF, Crystalline Mid-Elevation Forests, 289.37 seconds
+
+
+
 
 tic("One-layer raster, parallel")
-testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireInsectsF, aoiSet = test2, setNm = "testSingle")
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF, aoiSet = test2, setNm = "testSingle")
+toc()
+#2 sec test1 single
+#50 sec test2 single
+#26 sec test1 multilayer
+#crashes on test2 multilayer CyV
+#local - uses all local memory but continues processing, 544 seconds, success
+
+
+
+
+plan(multisession, workers = nCores)
+tic("One-layer raster, parallel")
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF, aoiSet = test, setNm = "testSingle")
 toc()
 #5 sec test (two)
 #3.83 sec test (two)
 #97.65 test2 (SR)
 #71.77 sec test2 (sr)
 #86.1 sec test2(sr)
+#55 sec test2(sr) cyv
+
+t <- testOut[[2]]
+
+
 
 tic("Multi-layer raster, parallel")
-testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireStackF, aoiSet = test2, setNm = "testMulti")
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF, aoiSet = test, setNm = "testMulti")
 toc()
 #8.45 sec
 #8.08 sec
@@ -246,6 +393,7 @@ testOut <- calculate.metrics.for.raster.aoi.set2(rasterFileName = fireInsectsF, 
 toc()
 #4.43 sec
 #1.15 sec
+#21 sec test2(sr) cyv
 
 tic("Multi-layer raster, parallel, filenm")
 testOut <- calculate.metrics.for.raster.aoi.set2(rasterFileName = fireStackF, aoiSet = test2, setNm = "testMulti")
@@ -261,6 +409,7 @@ tic("One-layer raster, seq")
 testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireInsectsF, aoiSet = test2, setNm = "testSingle")
 toc()
 #0.45 sec
+#84 sec test2 cyv
 
 tic("Multi-layer raster, seq")
 testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireStackF, aoiSet = test2, setNm = "testMulti")
@@ -272,6 +421,7 @@ tic("One-layer raster, seq, filenm")
 testOut <- calculate.metrics.for.raster.aoi.set2(rasterFileName = fireInsectsF, aoiSet = test2, setNm = "testSingle")
 toc()
 #0.4 sec
+#83 sec test2 cyv
 
 tic("Multi-layer raster, seq, filenm")
 testOut <- calculate.metrics.for.raster.aoi.set2(rasterFileName = fireStackF, aoiSet = test2, setNm = "testMulti")
@@ -279,6 +429,15 @@ toc()
 #8.74 sec
 
 #APPLY OVER 'ALL' object
+
+
+
+
+tic("Multi-layer raster, parallel, filenm")
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireStackF, aoiSet = test, setNm = "testMulti")
+toc()
+#5.12 sec
+#6.73 sec
 
 ```
 

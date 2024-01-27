@@ -174,6 +174,11 @@ careful.clip <- function(raster, vector, mask) {
     vector <- sf::st_as_sf(terra::unwrap(vector))
   }
   
+  #Handle unpacked spatVector
+  if(class(vector)[1] == "SpatVector") {
+    vector <- sf::st_as_sf(vector)
+  }
+  
   #Perform operation
   if (sf::st_crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
     print("Projecting vector")
@@ -184,7 +189,7 @@ careful.clip <- function(raster, vector, mask) {
   print("Clipping")
   r <- terra::crop(raster,
                    vector,
-                   mask = TRUE) #crop & mask
+                   mask = mask) #crop & mask
   
   #Repack if was packed coming in (i.e. parallelized)
   if(pack) {
@@ -307,6 +312,32 @@ careful.clip.set2 <- function(raster, vectors, namefield, mask) {
   return(out)
 }
 
+
+# A function to take in an sf object with multiple polygon rows and split it into a list of polygons.
+# The split will be performed based on namefield
+# PARAMETERS
+# vector : SF object with 1 or more polygons (rows)
+# namefield : string containing the name of the variable to use for splitting (e.g. "AreaName")
+sf.to.polygon.list <- function(vectors, namefield) {
+  if(nrow(vectors) == 1) {
+    splitVec <- list()
+    splitVec[[1]] <- vectors
+  } else {
+    splitVec <- split(vectors, f=vectors[[namefield]])
+  }
+  
+  return(splitVec)
+}
+
+# Function to run landscapemetrics::calculate_lsm and add the raster layer names for multi-band rasters
+# PARAMETERS
+# land : a landscape in the form of a spatRaster
+calculate.lsm.with.names <- function(land, ...) {
+  out <- land |>
+    landscapemetrics::calculate_lsm(...) |>
+    dplyr::mutate(layerName = names(land)[layer])
+  return(out)
+}
 
 ## PROJECT-SPECIFIC FUNCTIONS ----
 
