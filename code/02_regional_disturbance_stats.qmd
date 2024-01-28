@@ -325,6 +325,11 @@ calculate.raster.metrics <- function(rWrap, aoi) {
 ```{r}
 
 
+
+
+
+
+
 plan(multisession, workers = nCores)
 tic("One-layer raster, parallel")
 testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireInsectsF, aoiSet = test2, setNm = "testSingle") #fireInsectsF, beetle5yrF
@@ -343,6 +348,33 @@ v <- filter(test2, US_L4NAME == "Crystalline Mid-Elevation Forests")
 careful.clip(raster = t, vector = v, mask = TRUE)
 #CyV: up to 83 gb with beetle5yrF, Crystalline Mid-Elevation Forests, 289.37 seconds
 #Local: up to 9gb with beetle5yrF, Crystalline Mid-Elevation Forests
+
+t <- rast(drought5yrF)
+object.size(t)
+tic()
+tt <- ifel(t > 1, 1, t) #14269.852 sec (~4 hours)
+toc()
+
+
+plan(multisession, workers = nCores)
+tic()
+# Function to apply the operation
+change.values <- function(r) {
+    return(terra::app(r, function(x) { x[x > 1] <- 1; return(x) }))
+}
+
+# Split the raster into layers
+layers <- split(t, nlayer(t))
+
+# Process each layer in parallel
+result <- furrr::future_map(layers, change.values)
+
+# Combine the processed layers back into a single SpatRaster
+xx <- terra::rast(result)
+toc()
+
+
+
 
 t <- rast(fireStackF)
 v <- filter(test2, US_L4NAME == "Crystalline Mid-Elevation Forests")
