@@ -23,7 +23,7 @@ rm(list=ls()) #Ensure empty workspace if running from beginning
 #####EVERYTHING HERE SHOULD BE SET MANUALLY######
 #################################################
 
-computing <- "cyverse" #Sets computing location and file setup; "cyverse" or "local"
+computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
 nCores <- 16 #Number of cores available - only necessary if on CyVerse (future package struggles to read automatically on CyVerse, reads 128 (the maximum number of cores)
 
 forestPercCutoff <- 1 #The percentage of forest below which EPA regions will not be retained for calculations
@@ -325,6 +325,11 @@ calculate.raster.metrics <- function(rWrap, aoi) {
 ```{r}
 
 
+require(terra)
+require(sf)
+require(furrr)
+require(purrr)
+require(tictoc)
 
 
 
@@ -349,29 +354,104 @@ careful.clip(raster = t, vector = v, mask = TRUE)
 #CyV: up to 83 gb with beetle5yrF, Crystalline Mid-Elevation Forests, 289.37 seconds
 #Local: up to 9gb with beetle5yrF, Crystalline Mid-Elevation Forests
 
+
+
+####################
+
+
+test3 <- epaL3 |>
+  dplyr::group_by(US_L3NAME) |>
+  dplyr::summarize(geometry = st_union(geometry)) |>
+  dplyr::filter(US_L3NAME == "Southern Rockies")
+
+t <- rast(beetle5yrF)
+
+
+careful.clip <- function(raster, vector, mask) {
+  pack <- FALSE
+  
+  #Unpack if parallelized inputs
+  if(class(raster)[1] == "PackedSpatRaster") {
+    raster <- terra::unwrap(raster)
+    pack <- TRUE
+  }
+  if(class(vector)[1] == "PackedSpatVector") {
+    vector <- sf::st_as_sf(terra::unwrap(vector))
+  }
+  
+  #Handle unpacked spatVector
+  if(class(vector)[1] == "SpatVector") {
+    vector <- sf::st_as_sf(vector)
+  }
+  
+  #Perform operation
+  if (sf::st_crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
+    print("Projecting vector")
+    vector <- sf::st_transform(vector, terra::crs(raster)) 
+  } else {
+    print("Vector already in raster CRS")
+  }
+  print("Clipping")
+  r <- terra::crop(raster,
+                   vector,
+                   mask = mask) #crop & mask
+  
+  #Repack if was packed coming in (i.e. parallelized)
+  if(pack) {
+    r <- terra::wrap(r)
+  }
+  return(r)
+}
+
+tic()
+careful.clip(raster = t, vector = test3, mask = TRUE)
+toc()
+#Bumps up to ~87gb ram according to Rstudio, 316.892 sec
+
+
+
+###################
+
+#This runs on CyVerse
 t <- rast(drought5yrF)
 object.size(t)
 tic()
 tt <- ifel(t > 1, 1, t) #14269.852 sec (~4 hours)
 toc()
 
-
-plan(multisession, workers = nCores)
+# THIS CRASHES ALMOST IMMEDIATELY -------------
+future::plan(multisession, workers = nCores)
 tic()
 # Function to apply the operation
 change.values <- function(r) {
-    return(terra::app(r, function(x) { x[x > 1] <- 1; return(x) }))
+  r <- r |> 
+    terra::unwrap()
+  out <- terra::app(r, function(x) { x[x > 1] <- 1; return(x) }) |>
+    terra::wrap(proxy = TRUE)
+  return(out)
 }
 
 # Split the raster into layers
-layers <- split(t, nlayer(t))
+layersWrapped <- terra::split(t, seq(1:nlyr(t))) |> 
+  purrr::map(terra::wrap, proxy = TRUE)
 
 # Process each layer in parallel
-result <- furrr::future_map(layers, change.values)
+result <- furrr::future_map(layersWrapped, change.values) |>
+  purrr::map(terra::unwrap)
 
 # Combine the processed layers back into a single SpatRaster
 xx <- terra::rast(result)
 toc()
+
+
+
+
+# THIS TAKES A WHILE, BUT EVENTUALLY OVERWHELMS THE SYSTEM AND CRASHES 
+#just app
+tic()
+out <- terra::app(t, function(x) { x[x > 1] <- 1; return(x) })
+toc()
+
 
 
 
@@ -470,6 +550,7 @@ testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireStackF, aoi
 toc()
 #5.12 sec
 #6.73 sec
+
 
 ```
 

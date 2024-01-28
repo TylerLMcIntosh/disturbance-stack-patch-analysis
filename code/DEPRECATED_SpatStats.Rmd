@@ -149,15 +149,7 @@ install.and.load.packages <- function(packageList, autoinstall) {
 install.and.load.packages(packageList, autoinstall = "y")
 
 
-## CLEAN workspace & set up environment ----
-here::here() #Check here location
-if(computing == "local") {
-  here::i_am("code/01_SpatStats.Rmd")
-}
-#OR
-#setwd() #Set working directory directly
-options(digits = 6) #Set standard decimal print output
-options(scipen = 999) #Turn scientific notation on and off (0 = on, 999 = off)
+
 ```
 
 
@@ -302,11 +294,11 @@ test <- epaL4 |>
   dplyr::filter(US_L4NAME == "Foothill Potholes" | US_L4NAME == "Western Beaverhead Mountains")
   #dplyr::filter(US_L4NAME == "Western Beaverhead Mountains")
 
-# 
-# test2 <- epaL3 |>
-#   dplyr::group_by(US_L3NAME) |>
-#   dplyr::summarize(geometry = st_union(geometry)) |>
-#   dplyr::filter(US_L3NAME == "Southern Rockies")  
+
+test2 <- epaL3 |>
+  dplyr::group_by(US_L3NAME) |>
+  dplyr::summarize(geometry = st_union(geometry)) |>
+  dplyr::filter(US_L3NAME == "Southern Rockies")
 
 ```
 # Functions to create raster sets for AOIs
@@ -680,9 +672,9 @@ testOut <- generate.raster.metrics.for.aoi.set(fireInsects, test2, setNm = "test
 toc() #1831 seconds total, 30 min
 
 
-# tic("Multi-layer raster, parallel")
-# testOut <- generate.raster.metrics.for.aoi.set(fireStack, test, setNm = "test")
-# toc()
+tic("Multi-layer raster, parallel")
+testOut <- generate.raster.metrics.for.aoi.set(fireStack, test2, setNm = "test")
+toc()
 
 
 
