@@ -339,5 +339,26 @@ calculate.lsm.with.names <- function(land, ...) {
   return(out)
 }
 
+# Function to test if an object can be serialized
+# PARAMETERS
+# obj : any object
+test.serialization <- function(obj) {
+  
+  serialized_obj <- serialize(obj, NULL)
+  tryCatch({
+    serialize(obj, NULL)
+    print("Serialized successfully")
+  }, error = function(e) {
+    cat("Can't serialize: ", e$message, "\n")
+  })
+  
+  tryCatch({
+    unserialize(serialized_obj)
+    print("Unserialized successfully")
+  }, error = function(e) {
+    cat("Can't unserialize: ", e$message, "\n")
+  })
+}
+
 ## PROJECT-SPECIFIC FUNCTIONS ----
 
