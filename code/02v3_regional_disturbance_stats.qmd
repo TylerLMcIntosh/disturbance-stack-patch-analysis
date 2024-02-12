@@ -1,24 +1,19 @@
----
-title: "Untitled"
-format: html
-editor: visual
----
-
 Run spatial statistics on disturbance stack, including summaries and patch statistics
 
-Tyler L. McIntosh CU Boulder CIRES Earth Lab Last updated: 1/24/24
+Tyler L. McIntosh
+CU Boulder CIRES Earth Lab
+Last updated: 1/24/24
 
 This script uses the following naming conventions wherever possible:
-lowerCamelCase for variables
-period.separated for functions
-underscore_separated for files
+ lowerCamelCase for variables
+ period.separated for functions
+ underscore_separated for files
 
-
-cp -r ~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis /home/jovyan/disturbance-stack-patch-analysis/
 
 # Setup workspace
-
-User-set global parameters Directory management Package management
+User-set global parameters
+Directory management
+Package management
 
 ```{r setup, echo = FALSE, warning = FALSE, message = FALSE}
 
@@ -28,7 +23,7 @@ rm(list=ls()) #Ensure empty workspace if running from beginning
 #####EVERYTHING HERE SHOULD BE SET MANUALLY######
 #################################################
 
-computing <- "cyverse" #Sets computing location and file setup; "cyverse" or "local"
+computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
 nCores <- 16 #Number of cores available - only necessary if on CyVerse (future package struggles to read automatically on CyVerse, reads 128 (the maximum number of cores)
 
 forestPercCutoff <- 1 #The percentage of forest below which EPA regions will not be retained for calculations
@@ -41,11 +36,14 @@ resolution <- 30 #of the input rasters, in meters
 require(here)
 
 #Set here location
-here::i_am("code/02v2_regional_disturbance_stats.qmd")
+here::i_am("code/02_regional_disturbance_stats.qmd")
 
 #Set directories
-home <- here::here()
-
+if(computing == "local") {
+  home <- here::here()
+} else if(computing == "cyverse") {
+  home <- "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis"
+}
 
 #Raw data
 rawDir <- file.path(home, 'data/raw')
@@ -92,9 +90,13 @@ if(computing == "local") {
 } else if(computing == "cyverse") {
   cat("Using user-defined number of computing cores:", nCores)
 }
+
 future::plan("multisession", workers = nCores)
 
+options(future.globals.onReference = "error")
+
 ```
+
 
 # Load data paths
 
@@ -140,8 +142,8 @@ epaL4 <- sf::st_read(file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp"))
 ```
 
 # Set the areas of interest based on EPA ecoregions
-
-This code will only use L3 ecoregions with forest over a certain percentage of the landscape (forestPercCutoff) It will retain and use all L4 ecoregions within the selected L3 ecoregions
+This code will only use L3 ecoregions with forest over a certain percentage of the landscape (forestPercCutoff)
+It will retain and use all L4 ecoregions within the selected L3 ecoregions
 
 ```{r}
 
@@ -164,6 +166,7 @@ This code will only use L3 ecoregions with forest over a certain percentage of t
 #   dplyr::left_join(nameJoin, join_by(US_L3NAME, US_L4NAME)) |>
 #   dplyr::filter(US_L3NAMECLEAN %in% l3AboveForestPerc)
 
+
 #Two small l4 ecoregions to test script
 test <- epaL4 |>
   dplyr::group_by(US_L4NAME, US_L3NAME) |>
@@ -176,11 +179,16 @@ test2 <- epaL4 |>
   dplyr::summarize(geometry = st_union(geometry)) |>
   dplyr::left_join(nameJoin, join_by(US_L3NAME, US_L4NAME)) |>
   dplyr::filter(US_L3NAME == "Southern Rockies")
+
+test3 <- epaL4 |>
+  dplyr::filter(US_L3NAME == "Southern Rockies") |>
+  dplyr::left_join(nameJoin, join_by(US_L3NAME, US_L4NAME)) |>
+  dplyr::mutate(UNIQUE_ID = row_number())
   
 ```
 
-# Core function: compute stats
 
+# Core function: compute stats
 This function performs all operations on a given disturbance stack raster set, calling functions sourced from functions.R
 
 ```{r}
@@ -200,6 +208,7 @@ calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm) 
   #Prep raster for parallel processing
   spatRast <- terra::rast(rasterFileName)
   rWrap <- terra::wrap(spatRast, proxy = TRUE)
+  rm(spatRast) #remove global variable that is unserializable
   
 
   #Prep vectors for parallel processing: Split vectors into a wrapped list of spatVectors
@@ -211,23 +220,19 @@ calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm) 
     epaLvl <- "epaL3"
   }
   
-  splitVec <- aoiSet |>
-    sf.to.polygon.list(namefield = namefield) #from functions.R
   
+  splitVec <- aoiSet |>
+    #sf.to.polygon.list(namefield = namefield) #from functions.R
+    sf.to.polygon.list(namefield = "UNIQUE_ID") #from functions.R
+
   vs <- splitVec |> 
     purrr::map(terra::vect) |> 
     purrr::map(terra::wrap)
   
+  #Run calculate raster metrics function in parallel
+  print('Starting parallel processing')
+  allDats <- vs |> furrr::future_map(~calculate.raster.metrics(rWrap = rWrap, aoi = .x, setNm = setNm), .options = furrr_options(seed = TRUE))
   
-  
-  print('test parallel processing')
-  allDats <- c('cat', 'dog') |> furrr::future_map(~calculate.raster.metrics(rWrap = "rWrap", aoi = .x) )#, .options = furrr_options(seed = TRUE))
-  
-  
-  # #Run calculate raster metrics function in parallel
-  # print('Starting parallel processing')
-  # allDats <- vs |> furrr::future_map(~calculate.raster.metrics(rWrap = rWrap, aoi = .x) )#, .options = furrr_options(seed = TRUE))
-  # 
   # #Add dataset grouping names to outputs
   # allDats <- purrr::map2(.x = allDats, .y = names(allDats), .f = ~add.data.aoi.nms(datSet = .x, aoiNm = .y, setNm = setNm, epaLevel = epaLvl))
   # 
@@ -243,7 +248,7 @@ calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm) 
   # out <- list(allFreqs, allMetrics)
   # names(out) <- c("freqs", "metrics")
   # return(out)
-  
+  # 
 }
 
 #A function to add aoi and data set names to the output tables
@@ -257,42 +262,51 @@ add.data.aoi.nms <- function(datSet, aoiNm, setNm, epaLevel) {
 }
 
 #This function is meant to be run in parallel with a wrapped raster in rWrap
-calculate.raster.metrics <- function(rWrap, aoi) {
+calculate.raster.metrics <- function(rWrap, aoi, setNm) {
   
-  # #Clip the raster to the aoi sent to node
-  # clippedR <- careful.clip(raster = terra::unwrap(rWrap), vector = unwrap(aoi), mask = TRUE)
-  # 
-  # #Collect frequencies 
-  # freqs <- clippedR |> terra::freq(bylayer = TRUE, usenames = TRUE, wide = TRUE)
-  # 
-  # #Calculate patch metrics
-  # metrics <- clippedR |>
-  #   calculate.lsm.with.names( #from functions.R, adds raster layer names as well
-  #     #full_name = TRUE, #NOTE: for some reason cyverse in parallel won't do full_names = TRUE in the function call, so have to do manually
-  #     directions = 8,
-  #     edge_depth = edgeDepth %/% resolution, #edge depth in pixels, without remainder
-  #     what = c(
-  #       'lsm_c_ai',
-  #       'lsm_p_area',
-  #       'lsm_p_cai',
-  #       'lsm_p_core',
-  #       'lsm_p_enn',
-  #       'lsm_p_para',
-  #       'lsm_p_shape',
-  #       'lsm_p_contig',
-  #       'lsm_p_circle'
-  #     )
-  #   ) |>
-  #   dplyr::left_join(landscapemetrics::lsm_abbreviations_names) #NOTE: for some reason cyverse in parallel won't do full_names = TRUE in the function call, so have to do manually
-  # 
-  # #Return data and node ID
-  # cat("Data coming back from node: ", Sys.getpid(), "\n")
-  # 
+  unwrappedAoi <- terra::unwrap(aoi)
+  
+  #Clip the raster to the aoi sent to node
+  clippedR <- careful.clip(raster = terra::unwrap(rWrap), vector = unwrappedAoi, mask = TRUE)
+  
+  #Collect frequencies 
+  freqs <- clippedR |> terra::freq(bylayer = TRUE, usenames = TRUE, wide = TRUE)
+  
+  #Calculate patch metrics
+  metrics <- clippedR |>
+    calculate.lsm.with.names( #from functions.R, adds raster layer names as well
+      #full_name = TRUE, #NOTE: for some reason cyverse in parallel won't do full_names = TRUE in the function call, so have to do manually
+      directions = 8,
+      edge_depth = edgeDepth %/% resolution, #edge depth in pixels, without remainder
+      what = c(
+        'lsm_c_ai',
+        'lsm_p_area',
+        'lsm_p_cai',
+        'lsm_p_core',
+        'lsm_p_enn',
+        'lsm_p_para',
+        'lsm_p_shape',
+        'lsm_p_contig',
+        'lsm_p_circle'
+      )
+    ) |>
+    dplyr::left_join(landscapemetrics::lsm_abbreviations_names) #NOTE: for some reason cyverse in parallel won't do full_names = TRUE in the function call, so have to do manually
+  
+  #Return data and node ID
+  cat("Data coming back from node: ", Sys.getpid(), "\n")
+  cat(setNm, unique(unwrappedAoi$US_L4NAME))
+  
+  write.csv(freqs, file.path(outDir, glue::glue("freqs_{unique(unwrappedAoi$US_L4L3NAMECLEAN)}_{unique(unwrappedAoi$UNIQUE_ID)}_{setNm}.csv")))
+  write.csv(metrics, file.path(outDir, glue::glue("metrics_{unique(unwrappedAoi$US_L4L3NAMECLEAN)}_{unique(unwrappedAoi$UNIQUE_ID)}_{setNm}.csv")))
+
+
+  rm(freqs, metrics, clippedR, unwrappedAoi)
+  gc()
+  
   # outputs <- list(freqs, metrics)
   # names(outputs) <- c("freqs", "metrics")
   # 
   # return(outputs)
-  return("freqs")
   
 }
 
@@ -326,6 +340,7 @@ calculate.raster.metrics <- function(rWrap, aoi) {
 
 
 ```
+
 
 # Run core function on datasets
 
@@ -474,14 +489,22 @@ options(future.globals.onReference = "error")
 
 
 tic("One-layer raster, parallel")
-testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF, aoiSet = test, setNm = "testSingle")
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF, aoiSet = test2, setNm = "testSingle")
 toc()
 #2 sec test1 single
 #50 sec test2 single
 #26 sec test1 multilayer
 #crashes on test2 multilayer CyV
-#local - uses all local memory but continues processing, 544 seconds, success
+#test2 local - uses all local memory but continues processing, 544 seconds, success
 
+
+################################################
+#TESTING WITHOUT MERGING VECTOR GEOMETRIES FIRST
+tic("One-layer raster, parallel")
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF, aoiSet = test3, setNm = "testSingle")
+toc()
+#test 3, no merge: 317 seconds for single-layer raster
+#test 3, no merge: 7349.99 seconds for 18-layer raster
 
 
 
@@ -563,32 +586,4 @@ toc()
 ```
 
 
-#test serialization
 
-```{r}
-
-
-
-test.serialization <- function(obj) {
-  
-  serialized_obj <- serialize(obj, NULL)
-  tryCatch({
-      serialize(obj, NULL)
-      print("Serialized successfully")
-  }, error = function(e) {
-      cat("Can't serialize: ", e$message, "\n")
-  })
-  
-  tryCatch({
-      unserialize(serialized_obj)
-      print("Unserialized successfully")
-  }, error = function(e) {
-      cat("Can't unserialize: ", e$message, "\n")
-  })
-}
-
-allObj <- ls()
-allObj |> map(test.serialization)
-
-
-```

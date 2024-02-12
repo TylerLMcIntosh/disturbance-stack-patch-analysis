@@ -117,8 +117,34 @@ west <- usa[usa$STUSPS %in% c("WA", "OR", "CA", "ID", "MT", "WY", "NV", "AZ", "C
 aoiL3Interest <- epaL3 |>
   dplyr::group_by(US_L3NAME) |>
   dplyr::summarize(geometry = st_union(geometry)) |>
-  dplyr::mutate(US_L3NAMECLEAN = gsub(" ", "", US_L3NAME)) |>
-  sf::st_filter(west)
+  dplyr::mutate(US_L3NAMECLEAN = gsub(" ", "", US_L3NAME))# %>%
+#  sf::st_filter(west, join = st_within)
+
+
+mapview::mapview(aoiL3Interest) + mapview::mapview(rasterPolygon_sf)
+
+
+
+
+rasterExtent <- terra::ext(fMask)
+
+rasterPolygon_sf <- st_as_sf(vect(rasterExtent, crs = crs(fMask)))
+
+within_indices <- st_within(aoiL3Interest, rasterPolygon_sf, sparse = TRUE)
+
+# Since st_within returns a list in sparse format, convert it to a vector of indices
+indices <- which(lengths(within_indices) > 0)
+
+# Use the indices to filter polygons
+fullyContainedPolygons_sf <- aoiL3Interest[indices, ]
+
+
+mapview::mapview(fullyContainedPolygons_sf)
+
+
+paste(fullyContainedPolygons_sf$US_L3NAME, collapse = "', '")
+
+
 
 #EPA level 4 AOI, only including L4 ecoregions in the L3 ecoregions of interest
 aoiL4Interest <- epaL4 |>

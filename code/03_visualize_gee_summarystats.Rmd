@@ -1,0 +1,70 @@
+
+```{r}
+
+library(sf)
+library(tidyverse)
+library(purrr)
+library(here)
+library(terra)
+library(mblm)
+
+d <- terra::rast(here::here('data/derived/drought_dist_stack_west.tif'))
+
+l3SumDats <- readr::read_csv(here::here('data/derived/dStackL3Frequencies.csv'))
+
+
+#A function to turn the GEE data into a long-form dataframe
+clean.reorganize.data <- function(df) {
+ df[is.na(df)] <- 0
+ 
+ deal.with.one.year <- function(yr) {
+    yrAbbv <- paste0("disturbance", yr)
+    selected <- dplyr::select(df, starts_with(yrAbbv), us_l3code) |>
+      dplyr::mutate(year = as.integer(yr)) |>
+      rename_with(~ gsub(paste0(yrAbbv, "_"), "", .x), starts_with(yrAbbv))
+      
+    return(selected)
+  }
+ 
+ years <- unique(unlist(regmatches(names(l3SumDats), gregexpr("(?<=ance).+?(?=_)", names(l3SumDats), perl = TRUE))))
+  listOfYearData <- years |> purrr::map(deal.with.one.year)
+  combined <- dplyr::bind_rows(listOfYearData)
+  combined[is.na(combined)] <- 0
+  return(combined)
+}
+
+
+#A function to add columns of interest for disturbance hectares
+# 0 - None
+# 1 - Fire
+# 2 - Insect/Disease
+# 3 - Hot Drought
+# 4 - Fire + Hot Drought
+# 5 - Insect/Disease + Hot Drought
+add.hectares <- function(df) {
+  out <- df |>
+    dplyr::mutate(noneHa = (`0`) * 900 * 0.0001,
+                  fireHa = (`1` + `4`) * 900 * 0.0001,
+                  insectHa = (`2` + `5`) * 900 * 0.0001,
+                  droughtHa = (`3` + `4` + `5`) * 900 * 0.0001,)
+  return(out)
+}
+
+
+
+
+
+l3SumDatsClean <- l3SumDats |>
+  clean.reorganize.data() |>
+  add.hectares()
+
+t <- l3SumDatsClean |> filter(us_l3code == 15)
+tsFit <- mblm::mblm(formula = fireHa ~ year, dataframe = t, repeated = FALSE)
+summary.mblm(tsFit)
+tsFit$coefficients["year"]
+
+coef(summary.mblm(tsFit))[["year", "Pr(>|V|)"]]
+
+
+```
+
