@@ -471,7 +471,7 @@ options(future.globals.onReference = "error")
 
 
 tic("One-layer raster, parallel")
-testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF, aoiSet = test2, setNm = "testSingle")
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = fireInsectsF, aoiSet = test2, setNm = "testSingle")
 toc()
 #2 sec test1 single
 #50 sec test2 single

@@ -7,16 +7,42 @@ library(purrr)
 library(here)
 library(terra)
 library(mblm)
+library(tmap)
+library(RColorBrewer)
+library(patchwork) # BETTER AND MORE INTUITIVE THAN BOTH GRIDEXTRA AND COWPLOT!!!
 
-d <- terra::rast(here::here('data/derived/drought_dist_stack_west.tif'))
+#Set directories
+home <- here::here()
+#Raw data
+rawDir <- file.path(home, 'data/raw')
 
-l3SumDats <- readr::read_csv(here::here('data/derived/dStackL3Frequencies.csv'))
+figsDir <- here::here("figs")
+if (!dir.exists(figsDir)){
+  dir.create(figsDir)
+}
 
+
+
+#LOAD DATA
+epaL3 <- sf::st_read(file.path(rawDir, "us_eco_l3/us_eco_l3.shp"))
+epaL4 <- sf::st_read(file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp"))
+l3SumDatsSimple <- readr::read_csv(here::here('data/derived/dStackL3Frequencies.csv'))
+l3SumDatsFull <- readr::read_csv(here::here('data/derived/fullDStackL3Frequencies.csv'))
+l4SumDatsSimple <- readr::read_csv(here::here('data/derived/dStackL4Frequencies.csv'))
+l4SumDatsFull <- readr::read_csv(here::here('data/derived/fullDStackL4Frequencies.csv'))
+
+#FILTER ECOREGIONS
+epaL3Use <- epaL3 |>
+  dplyr::group_by(US_L3NAME, US_L3CODE) |>
+  dplyr::summarize(geometry = st_union(geometry)) |>
+  filter(US_L3CODE %in% unique(l3SumDatsSimple$us_l3code))
+epaL4Use <- epaL4 |>
+  dplyr::group_by(US_L4NAME, US_L4CODE) |>
+  dplyr::summarize(geometry = st_union(geometry)) |>
+  filter(US_L4CODE %in% unique(l4SumDatsSimple$us_l4code))
 
 #A function to turn the GEE data into a long-form dataframe
 clean.reorganize.data <- function(df) {
- df[is.na(df)] <- 0
- 
  deal.with.one.year <- function(yr) {
     yrAbbv <- paste0("disturbance", yr)
     selected <- dplyr::select(df, starts_with(yrAbbv), us_l3code) |>
@@ -26,7 +52,7 @@ clean.reorganize.data <- function(df) {
     return(selected)
   }
  
- years <- unique(unlist(regmatches(names(l3SumDats), gregexpr("(?<=ance).+?(?=_)", names(l3SumDats), perl = TRUE))))
+ years <- unique(unlist(regmatches(names(df), gregexpr("(?<=ance).+?(?=_)", names(df), perl = TRUE))))
   listOfYearData <- years |> purrr::map(deal.with.one.year)
   combined <- dplyr::bind_rows(listOfYearData)
   combined[is.na(combined)] <- 0
@@ -41,7 +67,7 @@ clean.reorganize.data <- function(df) {
 # 3 - Hot Drought
 # 4 - Fire + Hot Drought
 # 5 - Insect/Disease + Hot Drought
-add.hectares <- function(df) {
+add.hectares.simple <- function(df) {
   out <- df |>
     dplyr::mutate(noneHa = (`0`) * 900 * 0.0001,
                   fireHa = (`1` + `4`) * 900 * 0.0001,
@@ -50,20 +76,232 @@ add.hectares <- function(df) {
   return(out)
 }
 
+#A function to add columns of interest for disturbance hectares
+# Original data stack codes are:
+# Value - landfire disturbance - hotter-drought
+# 0 - none - no hotter-drought/fewer than 4 thresholds exceeded
+# 1 - fire - no hotter-drought/fewer than 4 thresholds exceeded
+# 2 - insect/disease - no hotter-drought/fewer than 4 thresholds exceeded
+# 3 - other Landfire disturbance - no hotter-drought/fewer than 4 thresholds exceeded
+# 4 - none - hotter-drought with 4 thresholds exceeded
+# 5 - fire - hotter-drought with 4 thresholds exceeded
+# 6 - insects/disease - hotter-drought with 4 thresholds exceeded
+# 7 - other Landfire disturbance - hotter-drought with 4 thresholds exceeded
+# 8 - none - hotter-drought with 5 thresholds exceeded
+# 9 - fire - hotter-drought with 5 thresholds exceeded
+# 10 - insects/disease - hotter-drought with 5 thresholds exceeded
+# 11 - other Landfire disturbance - hotter-drought with 5 thresholds exceeded
+# 12 - none - hotter-drought with 6 thresholds exceeded
+# 13 - fire - hotter-drought with 6 thresholds exceeded
+# 14 - insects/disease - hotter-drought with 6 thresholds exceeded
+# 15 - other Landfire disturbance - hotter-drought with 6 thresholds exceeded
+add.hectares.full <- function(df) {
+  out <- df |>
+    dplyr::mutate(noneHa = (`0`) * 900 * 0.0001,
+                  fireHa = (`1` + `5` + `9` + `13`) * 900 * 0.0001,
+                  insectHa = (`2` + `6` + `10` + `14`) * 900 * 0.0001,
+                  drought4Ha = (`4` + `5` + `6` + `7`) * 900 * 0.0001,
+                  drought5Ha = (`8` + `9` + `10` + `11`) * 900 * 0.0001,
+                  drought6Ha = (`12` + `13` + `14` + `15`) * 900 * 0.0001,
+                  drought4OrMoreHa = drought4Ha + drought5Ha + drought6Ha,
+                  drought5OrMoreHa = drought5Ha + drought6Ha)
+  return(out)
+}
+
+
+# A function to run theil-sen fits on the full dataframe
+# PARAMETERS
+# df : dataframe to run
+# codeCol : the name of the column to use codes from to split out different regions (e.g. us_l3code)
+# example use : l3tsFitsSimple <- run.ts.fits(df = l3SumDatsSimpleClean, us_l3code)
+run.ts.fits <- function(df, codeCol) {
+  codes <- df |>
+    pull({{codeCol}}) |>
+    unique()
+  regionTSFits <- codes |> purrr::map(run.ts.fit.one.region, df, {{codeCol}})
+  allFits <- dplyr::bind_rows(regionTSFits)
+  return(allFits)
+}
+
+# A function to run theil-sen fits on just one region that has been split out by the codeCol.
+# Mapped in run.ts.fits
+run.ts.fit.one.region <- function(code, df, codeCol) {
+  dfRegion <- df |>
+    dplyr::filter({{codeCol}} == code)
+
+  vars <- names(dfRegion) |> grep(pattern = "Ha", value = TRUE)
+
+  tsFits <- vars |>
+    purrr::map(~run.ts.fit.one.var(dfRegion, .x)) %>%
+    do.call(cbind, .) |>
+    dplyr::mutate(code = as.character(code))
+
+  return(tsFits)
+}
+
+# A function to run theil-sen fits on just one variable from one region that has been split out by the codeCol.
+# Mapped in run.ts.fit.one.region
+run.ts.fit.one.var <- function(dat, var) {
+  formula_str <- paste0(var, " ~ year")
+  formula <- as.formula(formula_str)
+  tsFit <- mblm::mblm(formula = formula, dataframe = dat, repeated = FALSE)
+  coeff <- tsFit$coefficients["year"]
+  pVal <- coef(summary.mblm(tsFit))[["year", "Pr(>|V|)"]]
+  out <- data.frame(coefficient = coeff, pValue = pVal) |>
+    setNames(c(paste0(var, "_coef"), paste0(var, "_pval")))
+  return(out)
+}
+
+# A function to replace non-significant values with NAs
+non.significant.to.na <- function(df, pSig)  {
+  # Identify pairs of 'coef' and 'pval' columns
+  coef_cols <- grep("coef$", names(df), value = TRUE)
+  pval_cols <- gsub("coef$", "pval", coef_cols)
+  
+  # Loop through the pairs and replace 'coef' values with NA
+  # based on the threshold for 'pval'
+  for (i in seq_along(coef_cols)) {
+    coef_col <- coef_cols[i]
+    pval_col <- pval_cols[i]
+    
+    # Replace with NA if pval is above the threshold
+    df[[coef_col]][df[[pval_col]] > pSig] <- NA
+  }
+  
+  return(df)
+}
+
+
+# MASTER FUNCTION TO CLEAN DATA AND RUN THIEL-SEN FITS ON ALL ECOREGIONS
+# PARAMETERS
+# df : dataframe from GEE
+# epaLevel : epa ecoregion level of dataset as a string ("l3" or "l4")
+# complexity : whether this is for the simplified or full datastack, as a string ("full" or "simple")
+run.full.ts.analysis <- function(df, epaLevel, complexity, pSig) {
+  sumDatsSimpleClean <- df |>
+    clean.reorganize.data() %>%
+    { if (complexity == "full") . |> add.hectares.full() else . |> add.hectares.simple() }
+  if (epaLevel == "l3") {
+    tsFitsFull <- run.ts.fits(df = sumDatsSimpleClean, us_l3code)
+    epaWithFitsFull <- epaL3Use |>
+      left_join(tsFitsFull, join_by(US_L3CODE == code))
+  } else {
+    tsFitsFull <- run.ts.fits(df = sumDatsSimpleClean, us_l4code)
+    epaWithFitsFull <- epaL4Use |>
+      left_join(tsFitsFull, join_by(US_L4CODE == code))
+  }
+  
+  #Remove non-significant values
+  epaWithFitsFullSig <- epaWithFitsFull |>
+    non.significant.to.na(pSig = pSig)
+
+  #Create long-form data for visualization
+  epaWithFitsFullSigLong <- epaWithFitsFullSig |>
+  dplyr::select(-dplyr::matches("pval")) |>
+  tidyr::pivot_longer( 
+    cols = dplyr::matches("coef"),
+    names_to = "coefficient_type",
+    values_to = "coefficient_value")
+  
+  
+  return(epaWithFitsFullSigLong)
+}
 
 
 
 
-l3SumDatsClean <- l3SumDats |>
-  clean.reorganize.data() |>
-  add.hectares()
 
-t <- l3SumDatsClean |> filter(us_l3code == 15)
-tsFit <- mblm::mblm(formula = fireHa ~ year, dataframe = t, repeated = FALSE)
-summary.mblm(tsFit)
-tsFit$coefficients["year"]
 
-coef(summary.mblm(tsFit))[["year", "Pr(>|V|)"]]
+
+
+epaL3FullFinalLong <- run.full.ts.analysis(df = l3SumDatsFull, epaLevel = "l3", complexity = "full", pSig = 0.05)
+
+
+
+
+
+vs <- c("fireHa_coef", "insectHa_coef", "drought4OrMoreHa_coef")
+nms <- c("Fire", "Insect", "Drought 4+")
+maps <- purrr::map2(.x = vs,
+                   .y = nms,
+            .f = function(x, y) epaL3FullFinalLong %>% 
+              filter(coefficient_type == x) %>%
+              ggplot(aes(fill = coefficient_value)) +
+              geom_sf(lwd = 0.1) +
+                scale_fill_gradient2(
+                 low = rev(RColorBrewer::brewer.pal(11, "RdYlBu"))[1], 
+                 mid = rev(RColorBrewer::brewer.pal(11, "RdYlBu"))[6],
+                 high = rev(RColorBrewer::brewer.pal(11, "RdYlBu"))[11],
+                 na.value = "white", 
+                 midpoint = 0, 
+                 name = y,
+                 labels = scales::label_comma()) +
+              theme_minimal() +
+              theme(axis.text = element_blank(),
+                    axis.ticks = element_blank()))
+
+combined_plot <- patchwork::wrap_plots(plotlist = maps, ncol = 3) +
+  plot_annotation(title = "Forest area impacted by disturbances over time, 1999-2020",
+                  subtitle = "Values are coefficients from non-repeated theil-sen regressions, representing ha/year",
+                  caption = "EPA ecoregions colored white have P values > 0.05")
+print(combined_plot)
+ggsave(filename = file.path(figsDir, "l3_dist_plot1.png"), units = "in", width = 10)
+
+
+
+vs <- c("drought4OrMoreHa_coef", "drought5OrMoreHa_coef", "drought6Ha_coef")
+nms <- c("Drought 4+", "Drought 5+", "Drought 6")
+maps <- purrr::map2(.x = vs,
+                   .y = nms,
+            .f = function(x, y) epaL3FullFinalLong %>% 
+              filter(coefficient_type == x) %>%
+              ggplot(aes(fill = coefficient_value)) +
+              geom_sf(lwd = 0.1) +
+                scale_fill_gradient2(
+                 low = rev(RColorBrewer::brewer.pal(11, "RdYlBu"))[1], 
+                 mid = rev(RColorBrewer::brewer.pal(11, "RdYlBu"))[6],
+                 high = rev(RColorBrewer::brewer.pal(11, "RdYlBu"))[11],
+                 na.value = "white", 
+                 midpoint = 0, 
+                 name = y,
+                 labels = scales::label_comma()) +
+              theme_minimal() +
+              theme(axis.text = element_blank(),
+                    axis.ticks = element_blank()))
+
+combined_plot <- patchwork::wrap_plots(plotlist = maps, ncol = 3) +
+  plot_annotation(title = "Forest area impacted by hotter drought over time, 1999-2020",
+                  subtitle = "Values are coefficients from non-repeated theil-sen regressions, representing ha/year",
+                  caption = "EPA ecoregions colored white have P values > 0.05")
+print(combined_plot)
+ggsave(filename = file.path(figsDir, "l3_drought_plot1.png"), units = "in", width = 10)
+
+
+```
+
+
+
+```{r deprecated}
+#TMAP APPROACH TO FACETED MAPPING
+# tm <- tmap::tm_shape(epaL3FullFinal) +
+#   tmap::tm_polygons(c("fireHa_coef", "insectHa_coef", "drought4OrMoreHa_coef"), title = c("Fire ha increase per year", "Insect coefficient", "Drought 4+ coefficient"), palette = "-RdYlBu", style = "cont", na.color = "gray", midpoint = 0) +
+#   tmap::tm_layout(frame = FALSE, main.title = "Disturbance changes over time by EPA L3 ecoregion, P < 0.05", legend.outside = FALSE)
+#   #tm_layout(outer.margins = 0, footer = "Gray ecoregions have theil-sen coefficients that are nonsignificant at the {} level")
+# print(tm)
+
+# tm <- tm_shape(epaL3FullFinal_long) +
+#   tm_polygons("coefficient_value", 
+#               title = "Coefficient", 
+#               palette = "-RdYlBu", 
+#               style = "cont", 
+#               na.color = "gray", 
+#               midpoint = 0) +
+#   tm_facets(by = "coefficient_type", free.coords = FALSE, ncol = 3, free.scales = TRUE) +
+#   tm_layout(frame = FALSE, 
+#             main.title = "Disturbance changes over time by EPA L3 ecoregion, P < 0.05", 
+#             legend.outside = TRUE)
+# print(tm)
+
 
 
 ```
