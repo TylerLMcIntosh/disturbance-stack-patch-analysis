@@ -300,7 +300,7 @@ careful.clip.universal <- function(raster, vector, mask) {
   }
   
   #If using raster package
-  if(class(raster)[1] == "RasterLayer" | class(raster)[1] == "RasterStack" ) {
+  if(class(raster)[1] == "RasterLayer" | class(raster)[1] == "RasterStack" | class(raster)[1] == "RasterBrick") {
     
     #Perform operation
     if (sf::st_crs(vector) != raster::crs(raster)) { #if raster and vector aren't in same projection, change vector to match

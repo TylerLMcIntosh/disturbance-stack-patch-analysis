@@ -4,23 +4,15 @@ format: html
 editor: visual
 ---
 
-
 Run spatial statistics on disturbance stack, including summaries and patch statistics
 
-Tyler L. McIntosh
-CU Boulder CIRES Earth Lab
-Last updated: 3/20/24
+Tyler L. McIntosh CU Boulder CIRES Earth Lab Last updated: 3/20/24
 
-This script uses the following naming conventions wherever possible:
- lowerCamelCase for variables
- period.separated for functions
- underscore_separated for files
-
+This script uses the following naming conventions wherever possible: lowerCamelCase for variables period.separated for functions underscore_separated for files
 
 # Setup workspace
-User-set global parameters
-Directory management
-Package management
+
+User-set global parameters Directory management Package management
 
 ```{r setup, echo = FALSE, warning = FALSE, message = FALSE}
 
@@ -30,7 +22,7 @@ rm(list=ls()) #Ensure empty workspace if running from beginning
 #####EVERYTHING HERE SHOULD BE SET MANUALLY######
 #################################################
 
-computing <- "cyverse" #Sets computing location and file setup; "cyverse" or "local"
+computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
 nCores <- 16 #Number of cores available - only necessary if on CyVerse (future package struggles to read automatically on CyVerse, reads 128 (the maximum number of cores)
 
 forestPercCutoff <- 1 #The percentage of forest below which EPA regions will not be retained for calculations
@@ -148,11 +140,9 @@ epaL4 <- sf::st_read(file.path(rawDir, "us_eco_l4/us_eco_l4_no_st.shp"))
 
 ```
 
-
-
 # Set the areas of interest based on EPA ecoregions
-This code will only use L3 ecoregions with forest over a certain percentage of the landscape (forestPercCutoff)
-It will retain and use all L4 ecoregions within the selected L3 ecoregions
+
+This code will only use L3 ecoregions with forest over a certain percentage of the landscape (forestPercCutoff) It will retain and use all L4 ecoregions within the selected L3 ecoregions
 
 ```{r}
 
@@ -196,106 +186,44 @@ test3 <- epaL4 |>
   
 ```
 
+# Raster package is slower at clipping (~x2 if using rBrick)
 
-
-
-# Raster package is way, way slower at clipping (~x4 for single-layer, ~x5 for multi-layer)
-# Shifting to raster is not a good solution to get the parallelization working; try terra with single-layers only first
 
 ```{r}
 
-t <- terra::rast(disturbance5yrF[1])
-terra::plot(t)
-r <- raster::raster(disturbance5yrF[1])
-raster::plot(r)
-class(r)
+# t <- terra::rast(disturbance5yrF[1])
+# terra::plot(t)
+# r <- raster::raster(disturbance5yrF[1])
+# raster::plot(r)
+# class(r)
+# 
+#t <- terra::rast(droughtStackF)
+# terra::plot(t)
+# r <- raster::stack(droughtStackF)
+# raster::plot(r)
+# class(r)
+# rb <- raster::brick(droughtStackF)
+# raster::plot(rb)
+# class(rb)
+# 
+# 
+# tic()
+# xt <- careful.clip.universal(raster = t, vector = test[1,], mask = TRUE)
+# toc()
+# 
+# tic()
+# xr <- careful.clip.universal(raster = r, vector = test[1,], mask = TRUE)
+# toc()
+# 
+# tic()
+# xrb <- careful.clip.universal(raster = rb, vector = test[1,], mask = TRUE)
+# toc()
 
-t <- terra::rast(droughtStackF)
-terra::plot(t)
-r <- raster::stack(droughtStackF)
-raster::plot(r)
-class(r)
-
-
-#Function to clip a raster to a vector, ensuring in same projection
-#Returns raster in original projection, but clipped to vector
-# PARAMETERS
-# raster : a SpatRaster or PackedSpatRaster object
-# vector : a SpatVector, PackedSpatVector or SF object
-# mask : TRUE or FALSE; whether terra::clip should mask the raster as well
-careful.clip.universal <- function(raster, vector, mask) {
-  pack <- FALSE
-  
-  #Unpack if parallelized inputs
-  if(class(raster)[1] == "PackedSpatRaster") {
-    raster <- terra::unwrap(raster)
-    pack <- TRUE
-  }
-  if(class(vector)[1] == "PackedSpatVector") {
-    vector <- sf::st_as_sf(terra::unwrap(vector))
-  }
-  
-  #Handle unpacked spatVector
-  if(class(vector)[1] == "SpatVector") {
-    vector <- sf::st_as_sf(vector)
-  }
-  
-  #If using raster package
-  if(class(raster)[1] == "RasterLayer" | class(raster)[1] == "RasterStack" ) {
-    
-    #Perform operation
-    if (sf::st_crs(vector) != raster::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
-      print("Projecting vector")
-      vector <- sf::st_transform(vector, raster::crs(raster)) 
-    } else {
-      print("Vector already in raster CRS")
-    }
-    print("Clipping")
-    r <- raster::crop(raster,
-                     vector)
-    if(mask) {
-      r <- r |> raster::mask(vector)
-    }
-      
-    return(r)
-    
-  } else { #terra package
-    
-    #Perform operation
-    if (sf::st_crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
-      print("Projecting vector")
-      vector <- sf::st_transform(vector, terra::crs(raster)) 
-    } else {
-      print("Vector already in raster CRS")
-    }
-    print("Clipping")
-    r <- terra::crop(raster,
-                     vector,
-                     mask = mask) #crop & mask
-    
-    #Repack if was packed coming in (i.e. parallelized)
-    if(pack) {
-      r <- terra::wrap(r)
-    }
-    return(r)
-    
-  }
-}
-
-
-tic()
-xt <- careful.clip.universal(raster = t, vector = test[1,], mask = TRUE)
-toc()
-
-tic()
-xr <- careful.clip.universal(raster = r, vector = test[1,], mask = TRUE)
-toc()
 
 ```
 
-
-
 # Core function: compute stats
+
 This function performs all operations on a given disturbance stack raster set, calling functions sourced from functions.R
 
 ```{r}
@@ -373,8 +301,14 @@ calculate.raster.metrics <- function(rWrap, aoi, setNm) {
   
   unwrappedAoi <- terra::unwrap(aoi)
   
-  #Clip the raster to the aoi sent to node
-  clippedR <- careful.clip(raster = terra::unwrap(rWrap), vector = unwrappedAoi, mask = TRUE)
+  #Clip the raster to the aoi sent to node ---- COMMENT ADAPTED TO TEST RASTER PACKAGE INSTEAD
+  unWrapR <- terra::unwrap(rWrap)
+  
+  rProcess <- raster::brick(unWrapR)
+  clippedR <- careful.clip(raster = rProcess, vector = unwrappedAoi, mask = TRUE)
+
+  #clippedR <- careful.clip(raster = unWrapR, vector = unwrappedAoi, mask = TRUE)
+  clippedR <- terra::rast(clippedR)
   
   #Collect frequencies 
   freqs <- clippedR |> terra::freq(bylayer = TRUE, usenames = TRUE, wide = TRUE)
@@ -403,8 +337,8 @@ calculate.raster.metrics <- function(rWrap, aoi, setNm) {
   cat("Data coming back from node: ", Sys.getpid(), "\n")
   cat(setNm, unique(unwrappedAoi$US_L4NAME))
   
-  write.csv(freqs, file.path(outDir, glue::glue("freqs_{unique(unwrappedAoi$US_L4L3NAMECLEAN)}_{gsub('_', '', names(clippedR))}_{setNm}.csv")))
-  write.csv(metrics, file.path(outDir, glue::glue("metrics_{unique(unwrappedAoi$US_L4L3NAMECLEAN)}_{gsub('_', '', names(clippedR))}_{setNm}.csv")))
+  write.csv(freqs, file.path(outDir, glue::glue("freqs_{unique(unwrappedAoi$US_L4L3NAMECLEAN)}_{setNm}.csv")))
+  write.csv(metrics, file.path(outDir, glue::glue("metrics_{unique(unwrappedAoi$US_L4L3NAMECLEAN)}_{setNm}.csv")))
 
 
   rm(freqs, metrics, clippedR, unwrappedAoi)
@@ -445,16 +379,19 @@ calculate.raster.metrics <- function(rWrap, aoi, setNm) {
 # }
 
 ```
+
 # Run functions
 
 ```{r}
 
-# tic("One-layer raster, parallel")
-# testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = disturbance5yrF, aoiSet = test2, setNm = "test_by_layer")
-# toc()
-# #2 sec test1 single
+tic("One-layer raster, parallel")
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = disturbance5yrF, aoiSet = test2, setNm = "testRaster")
+toc()
+# #9 sec test1 beetleSumsF terra
+# #42 sec test1 beetleSumsF raster
 # #50 sec test2 single
-# #26 sec test1 multilayer --- 87 sec test1 multilayer  by-layer (assume this is from cluster overhead)
+# #26 sec test1 multilayer --- 87 sec test1 multilayer by-layer terra (assume this is from cluster overhead)
+  # 164 sec test1 multilayer raster package, disturbance5yrF
 # #crashes on test2 multilayer CyV
 # #test2 local - uses all local memory but continues processing, 544 seconds, success
 # 
