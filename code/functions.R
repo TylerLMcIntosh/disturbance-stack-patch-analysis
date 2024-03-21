@@ -275,6 +275,74 @@ careful.clip2 <- function(raster, vector, mask) {
 }
 
 
+
+#Function to clip a raster to a vector, ensuring in same projection
+#Returns raster in original projection, but clipped to vector
+# PARAMETERS
+# raster : a SpatRaster or PackedSpatRaster object
+# vector : a SpatVector, PackedSpatVector or SF object
+# mask : TRUE or FALSE; whether terra::clip should mask the raster as well
+careful.clip.universal <- function(raster, vector, mask) {
+  pack <- FALSE
+  
+  #Unpack if parallelized inputs
+  if(class(raster)[1] == "PackedSpatRaster") {
+    raster <- terra::unwrap(raster)
+    pack <- TRUE
+  }
+  if(class(vector)[1] == "PackedSpatVector") {
+    vector <- sf::st_as_sf(terra::unwrap(vector))
+  }
+  
+  #Handle unpacked spatVector
+  if(class(vector)[1] == "SpatVector") {
+    vector <- sf::st_as_sf(vector)
+  }
+  
+  #If using raster package
+  if(class(raster)[1] == "RasterLayer" | class(raster)[1] == "RasterStack" ) {
+    
+    #Perform operation
+    if (sf::st_crs(vector) != raster::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
+      print("Projecting vector")
+      vector <- sf::st_transform(vector, raster::crs(raster)) 
+    } else {
+      print("Vector already in raster CRS")
+    }
+    print("Clipping")
+    r <- raster::crop(raster,
+                      vector)
+    if(mask) {
+      r <- r |> raster::mask(vector)
+    }
+    
+    return(r)
+    
+  } else { #terra package
+    
+    #Perform operation
+    if (sf::st_crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
+      print("Projecting vector")
+      vector <- sf::st_transform(vector, terra::crs(raster)) 
+    } else {
+      print("Vector already in raster CRS")
+    }
+    print("Clipping")
+    r <- terra::crop(raster,
+                     vector,
+                     mask = mask) #crop & mask
+    
+    #Repack if was packed coming in (i.e. parallelized)
+    if(pack) {
+      r <- terra::wrap(r)
+    }
+    return(r)
+    
+  }
+}
+
+
+
 #Function to clip a raster to a set of polygons (one clip per polygon in set)
 #Returns a set of clipped rasters as a named list
 #Works in either parallel or sequence, depending on what future::plan() has been set to
