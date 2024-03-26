@@ -162,7 +162,7 @@ test.future.function <- function(fun, ...) {
 # raster : a SpatRaster or PackedSpatRaster object
 # vector : a SpatVector, PackedSpatVector or SF object
 # mask : TRUE or FALSE; whether terra::clip should mask the raster as well
-careful.clip <- function(raster, vector, mask) {
+crop.careful <- function(raster, vector, mask) {
   pack <- FALSE
   
   #Unpack if parallelized inputs
@@ -180,7 +180,7 @@ careful.clip <- function(raster, vector, mask) {
   }
   
   #Perform operation
-  if (sf::st_crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
+  if (terra::crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
     print("Projecting vector")
     vector <- sf::st_transform(vector, terra::crs(raster)) 
   } else {
@@ -256,7 +256,7 @@ careful.clip2 <- function(raster, vector, mask) {
   }
   
   #Perform operation
-  if (sf::st_crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
+  if (terra::crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
     print("Projecting vector")
     vector <- sf::st_transform(vector, terra::crs(raster)) 
   } else {
@@ -278,11 +278,12 @@ careful.clip2 <- function(raster, vector, mask) {
 
 #Function to clip a raster to a vector, ensuring in same projection
 #Returns raster in original projection, but clipped to vector
+#Returns raster in the same form that it came in
 # PARAMETERS
-# raster : a SpatRaster or PackedSpatRaster object
+# raster : a SpatRaster, PackedSpatRaster, RasterLayer, RasterStack, or RasterBrick object
 # vector : a SpatVector, PackedSpatVector or SF object
 # mask : TRUE or FALSE; whether terra::clip should mask the raster as well
-careful.clip.universal <- function(raster, vector, mask) {
+crop.careful.universal <- function(raster, vector, mask, verbose = FALSE) {
   pack <- FALSE
   
   #Unpack if parallelized inputs
@@ -303,13 +304,13 @@ careful.clip.universal <- function(raster, vector, mask) {
   if(class(raster)[1] == "RasterLayer" | class(raster)[1] == "RasterStack" | class(raster)[1] == "RasterBrick") {
     
     #Perform operation
-    if (sf::st_crs(vector) != raster::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
-      print("Projecting vector")
+    if (raster::crs(vector) != raster::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
+      if(verbose) {print("Projecting vector")}
       vector <- sf::st_transform(vector, raster::crs(raster)) 
     } else {
-      print("Vector already in raster CRS")
+      if(verbose) {print("Vector already in raster CRS")}
     }
-    print("Clipping")
+    if(verbose) {print("Clipping")}
     r <- raster::crop(raster,
                       vector)
     if(mask) {
@@ -321,13 +322,13 @@ careful.clip.universal <- function(raster, vector, mask) {
   } else { #terra package
     
     #Perform operation
-    if (sf::st_crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
-      print("Projecting vector")
+    if (terra::crs(vector) != terra::crs(raster)) { #if raster and vector aren't in same projection, change vector to match
+      if(verbose) {print("Projecting vector")}
       vector <- sf::st_transform(vector, terra::crs(raster)) 
     } else {
-      print("Vector already in raster CRS")
+      if(verbose) {print("Vector already in raster CRS")}
     }
-    print("Clipping")
+    if(verbose) {print("Clipping")}
     r <- terra::crop(raster,
                      vector,
                      mask = mask) #crop & mask

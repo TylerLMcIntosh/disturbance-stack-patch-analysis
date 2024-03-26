@@ -166,7 +166,6 @@ It will retain and use all L4 ecoregions within the selected L3 ecoregions
 #   dplyr::left_join(nameJoin, join_by(US_L3NAME, US_L4NAME)) |>
 #   dplyr::filter(US_L3NAMECLEAN %in% l3AboveForestPerc)
 
-
 #Two small l4 ecoregions to test script
 test <- epaL4 |>
   dplyr::group_by(US_L4NAME, US_L3NAME) |>
@@ -179,11 +178,6 @@ test2 <- epaL4 |>
   dplyr::summarize(geometry = st_union(geometry)) |>
   dplyr::left_join(nameJoin, join_by(US_L3NAME, US_L4NAME)) |>
   dplyr::filter(US_L3NAME == "Southern Rockies")
-
-test3 <- epaL4 |>
-  dplyr::filter(US_L3NAME == "Southern Rockies") |>
-  dplyr::left_join(nameJoin, join_by(US_L3NAME, US_L4NAME)) |>
-  dplyr::mutate(UNIQUE_ID = row_number())
   
 ```
 
@@ -220,35 +214,34 @@ calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm) 
     epaLvl <- "epaL3"
   }
   
-  
   splitVec <- aoiSet |>
-    #sf.to.polygon.list(namefield = namefield) #from functions.R
-    sf.to.polygon.list(namefield = "UNIQUE_ID") #from functions.R
-
+    sf.to.polygon.list(namefield = namefield) #from functions.R
+  
   vs <- splitVec |> 
     purrr::map(terra::vect) |> 
     purrr::map(terra::wrap)
   
   #Run calculate raster metrics function in parallel
   print('Starting parallel processing')
-  allDats <- vs |> furrr::future_map(~calculate.raster.metrics(rWrap = rWrap, aoi = .x, setNm = setNm), .options = furrr_options(seed = TRUE))
+  freeRAMGB <- terra::free_RAM() / 1e6
+  allDats <- vs |> furrr::future_map(~calculate.raster.metrics(rWrap = rWrap, aoi = .x, freeRAMGB = freeRAMGB), .options = furrr_options(seed = TRUE))
   
-  # #Add dataset grouping names to outputs
-  # allDats <- purrr::map2(.x = allDats, .y = names(allDats), .f = ~add.data.aoi.nms(datSet = .x, aoiNm = .y, setNm = setNm, epaLevel = epaLvl))
-  # 
-  # # Extract and bind together freqs and metrics dataframes
-  # allFreqs <- allDats |> 
-  #   purrr::map(~ .x$freqs) |>  # Extract 'freqs' from each sublist
-  #   bind_rows()       # Combine all 'freqs' dataframes
-  # allMetrics <- allDats |> 
-  #   purrr::map(~ .x$metrics) |>  # Extract 'metrics' from each sublist
-  #   bind_rows()       # Combine all 'metrics' dataframes
-  # 
-  # #Return
-  # out <- list(allFreqs, allMetrics)
-  # names(out) <- c("freqs", "metrics")
-  # return(out)
-  # 
+  #Add dataset grouping names to outputs
+  allDats <- purrr::map2(.x = allDats, .y = names(allDats), .f = ~add.data.aoi.nms(datSet = .x, aoiNm = .y, setNm = setNm, epaLevel = epaLvl))
+  
+  # Extract and bind together freqs and metrics dataframes
+  allFreqs <- allDats |> 
+    purrr::map(~ .x$freqs) |>  # Extract 'freqs' from each sublist
+    bind_rows()       # Combine all 'freqs' dataframes
+  allMetrics <- allDats |> 
+    purrr::map(~ .x$metrics) |>  # Extract 'metrics' from each sublist
+    bind_rows()       # Combine all 'metrics' dataframes
+  
+  #Return
+  out <- list(allFreqs, allMetrics)
+  names(out) <- c("freqs", "metrics")
+  return(out)
+  
 }
 
 #A function to add aoi and data set names to the output tables
@@ -262,12 +255,12 @@ add.data.aoi.nms <- function(datSet, aoiNm, setNm, epaLevel) {
 }
 
 #This function is meant to be run in parallel with a wrapped raster in rWrap
-calculate.raster.metrics <- function(rWrap, aoi, setNm) {
+calculate.raster.metrics <- function(rWrap, aoi, freeRAMGB) {
   
-  unwrappedAoi <- terra::unwrap(aoi)
+  terra::terraOptions(memmax = freeRAMGB / nCores)
   
   #Clip the raster to the aoi sent to node
-  clippedR <- careful.clip(raster = terra::unwrap(rWrap), vector = unwrappedAoi, mask = TRUE)
+  clippedR <- crop.careful.universal(raster = terra::unwrap(rWrap), vector = unwrap(aoi), mask = TRUE)
   
   #Collect frequencies 
   freqs <- clippedR |> terra::freq(bylayer = TRUE, usenames = TRUE, wide = TRUE)
@@ -294,19 +287,13 @@ calculate.raster.metrics <- function(rWrap, aoi, setNm) {
   
   #Return data and node ID
   cat("Data coming back from node: ", Sys.getpid(), "\n")
-  cat(setNm, unique(unwrappedAoi$US_L4NAME))
   
-  write.csv(freqs, file.path(outDir, glue::glue("freqs_{unique(unwrappedAoi$US_L4L3NAMECLEAN)}_{unique(unwrappedAoi$UNIQUE_ID)}_{setNm}.csv")))
-  write.csv(metrics, file.path(outDir, glue::glue("metrics_{unique(unwrappedAoi$US_L4L3NAMECLEAN)}_{unique(unwrappedAoi$UNIQUE_ID)}_{setNm}.csv")))
-
-
-  rm(freqs, metrics, clippedR, unwrappedAoi)
-  gc()
+  outputs <- list(freqs, metrics)
+  names(outputs) <- c("freqs", "metrics")
   
-  # outputs <- list(freqs, metrics)
-  # names(outputs) <- c("freqs", "metrics")
-  # 
-  # return(outputs)
+  rm(clippedR, freqs, metrics)
+  
+  return(outputs)
   
 }
 
@@ -352,13 +339,6 @@ require(sf)
 require(furrr)
 require(purrr)
 require(tictoc)
-
-
-tic("One-layer raster, parallel")
-testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF[1], aoiSet = test3, setNm = "testSingle")
-toc()
-
-
 
 
 
@@ -496,7 +476,7 @@ options(future.globals.onReference = "error")
 
 
 tic("One-layer raster, parallel")
-testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF, aoiSet = test2, setNm = "testSingle")
+testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = disturbance5yrF[1], aoiSet = test2, setNm = "testMemMax")
 toc()
 #2 sec test1 single
 #50 sec test2 single
@@ -504,14 +484,6 @@ toc()
 #crashes on test2 multilayer CyV
 #test2 local - uses all local memory but continues processing, 544 seconds, success
 
-
-################################################
-#TESTING WITHOUT MERGING VECTOR GEOMETRIES FIRST
-tic("One-layer raster, parallel")
-testOut <- calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF, aoiSet = test3, setNm = "testSingle")
-toc()
-#test 3, no merge: 317 seconds for single-layer raster
-#test 3, no merge: 7349.99 seconds for 18-layer raster
 
 
 

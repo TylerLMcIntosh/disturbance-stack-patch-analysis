@@ -1,0 +1,492 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+Run spatial statistics on disturbance stack, including summaries and patch statistics
+
+Tyler L. McIntosh CU Boulder CIRES Earth Lab Last updated: 3/20/24
+
+This script uses the following naming conventions wherever possible: lowerCamelCase for variables period.separated for functions underscore_separated for files
+
+# Setup workspace
+
+User-set global parameters Directory management Package management
+
+```{r setup, echo = FALSE, warning = FALSE, message = FALSE}
+
+rm(list=ls()) #Ensure empty workspace if running from beginning
+
+#################################################
+#####EVERYTHING HERE SHOULD BE SET MANUALLY######
+#################################################
+
+computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
+nCores <- 16 #Number of cores available - only necessary if on CyVerse (future package struggles to read automatically on CyVerse, reads 128 (the maximum number of cores)
+
+forestPercCutoff <- 1 #The percentage of forest below which EPA regions will not be retained for calculations
+edgeDepth <- 200 #the edge depth to use for all landscapemetrics 'core' caluclations, in meters
+resolution <- 30 #of the input rasters, in meters
+
+#################################################
+
+# Directory management ----
+require(here)
+
+#Set here location
+here::i_am("code/02v4_regional_disturbance_stats.qmd")
+
+#Move data if on cyverse
+if(computing == "cyverse") {
+  system("cp -R ~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data /home/jovyan/data-store/disturbance-stack-patch-analysis/")
+}
+
+#Set directories
+home <- here::here()
+
+#Raw data
+rawDir <- file.path(home, 'data/raw')
+
+#Nathan outputs directory
+natOut <- file.path(home, 'data/nathan_outputs')
+
+#Derived data (outdirectory)
+devDir <- file.path(home, 'data/derived')
+if (!dir.exists(devDir)){
+  dir.create(devDir)
+}
+
+#Specific derived data directory for this script's outputs
+outDir <- file.path(devDir, "summary_stats")
+if (!dir.exists(outDir)){
+  dir.create(outDir)
+}
+
+# Package management ----
+
+# Source functions
+source(here::here('code/functions.R'), local = FALSE)
+
+#Check the required libraries and download if needed
+packageList <- c(
+  "tidyverse", #Includes ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr, forcats
+  "terra", #New raster data package, documentation pdf here: https://cran.r-project.org/web/packages/terra/terra.pdf
+  "future", "future.apply", "furrr", "doFuture", "progressr", #Futureverse! https://www.futureverse.org/packages-overview.html; https://henrikbengtsson.github.io/course-stanford-futureverse-2023/
+  "parallelly", #some useful functions from 'future' were moved to 'parallelly' because they were helpful outside the future framework
+  "sf", #New vector data package
+  #"mapview", #For quick interactive mapping
+  "tictoc", #time running of processes
+  "glue", #easy strings
+  "tigris", #state polygons
+  "ggpmisc"  #For adding R^2 to plots
+)
+
+install.and.load.packages(packageList, autoInstall = "y")
+
+#Start parallel computing ----
+#Set cores
+if(computing == "local") {
+  nCores <- future::availableCores() - 1
+} else if(computing == "cyverse") {
+  cat("Using user-defined number of computing cores:", nCores)
+}
+
+future::plan("multisession", workers = nCores)
+
+options(future.globals.onReference = "error")
+
+```
+
+
+# Load data & paths for derived data
+
+```{r load-data, echo = FALSE}
+
+#Load data paths
+
+fMaskF <- file.path(rawDir, 'landfire-bps-derived-forest-mask.tif')
+
+
+#Data from Nathan ----
+
+
+fireInsectsF <- file.path(devDir, "fire_and_insects.tif")
+
+
+#Individual disturbance stacks
+fireStackF <- file.path(devDir, 'fire_dist_stack_west.tif')
+insectStackF <- file.path(devDir, 'insect_dist_stack_west.tif')
+droughtStackF <- file.path(devDir, 'drought_dist_stack_west.tif')
+
+#Individual disturbance sums
+fireSumsF <- file.path(natOut, 'beetle_stack.tif')
+beetleSumsF <- file.path(natOut, 'fire_stack.tif')
+droughtSumsF <- file.path(natOut, 'drought_stack.tif')
+
+#Individual disturbance 5yr moving windows
+beetle5yrF <- list.files(file.path(natOut), pattern = "beetle_totals", full.names = TRUE)
+disturbance5yrF <- list.files(file.path(natOut), pattern = "disturbance_totals", full.names = TRUE)
+drought5yrF <- list.files(file.path(natOut), pattern = "drought_totals", full.names = TRUE)
+fire5yrF <- list.files(file.path(natOut), pattern = "fire_totals", full.names = TRUE)
+
+#Disturbance combination 5yr moving windows
+fireDrought5yrF <- list.files(file.path(natOut, "fire-dought"), pattern = "fire_drought_totals", full.names = TRUE)
+fireBeetle5yrF <- list.files(file.path(natOut, "fire-beetle"), pattern = "fire_beetle_totals", full.names = TRUE)
+droughtBeetle5yrF <- list.files(file.path(natOut, "drought-beetle"), pattern = "bettle_drought_totals", full.names = TRUE)
+fireBeetleDrought5yrF <- list.files(file.path(natOut, "all-unique", pattern = "all_unique", full.names = TRUE))
+
+crsUse <- terra::crs(terra::rast(fMaskF))
+
+```
+
+
+# Mange EPA ecoregions 
+
+```{r}
+
+# Access L4 EPA ecoregions via vsi
+epaL4 <- glue::glue(
+  "/vsizip/vsicurl/", #magic remote connection
+  "https://gaftp.epa.gov/EPADataCommons/ORD/Ecoregions/us/us_eco_l4.zip", #copied link to download location
+  "/us_eco_l4_no_st.shp") |> #path inside zip file
+  sf::st_read() |>
+  dplyr::mutate(L4_UNIQUE_ID = row_number()) |> #Add a unique ID for each subpolygon
+  sf::st_transform(crsUse)
+
+
+# Set the EPA ecoregion areas of interest to be under the raster
+
+## If don't already have the L3 name list, create it
+if (!"l3InterestNames.csv" %in% list.files(devDir, full.names = FALSE)) {
+  
+  #Access via vsi
+  epaL3 <- glue::glue(
+    "/vsizip/vsicurl/", #magic remote connection
+    "https://gaftp.epa.gov/EPADataCommons/ORD/Ecoregions/us/us_eco_l3.zip", #copied link to download location
+    "/us_eco_l3.shp") |> #path inside zip file
+    sf::st_read() |>
+    sf::st_transform(crsUse)
+  
+  #Merge EPA level 3 ecoregions
+  epaL3merged <- epaL3 |>
+    dplyr::group_by(US_L3NAME) |>
+    dplyr::summarize(geometry = st_union(geometry))
+  
+  #Get the L3 EPA ecoregions that are fully contained by the raster
+  rasterExtent <- terra::ext(fMask)
+  
+  rasterPolygon <- sf::st_as_sf(terra::vect(rasterExtent, crs = crsUse))
+  
+  ecoWithinIndices <- sf::st_within(epaL3merged, rasterPolygon, sparse = TRUE) # Since st_within returns a list in sparse format, convert it to a vector of indices
+  indices <- which(lengths(ecoWithinIndices) > 0)
+  
+  # Filter polygons with indices
+  epaL3Interest <- epaL3merged[indices, ]
+  
+  # mapview::mapview(epaL3Interest) #NOTE: Puget Lowland is excluded because the very edge of the raster cuts off a corner of it. Manually add back in!
+  # mapview::mapview(epaL3merged)
+  # mapview::mapview(rasterPolygon)
+  
+  #Manually add in the puget lowland
+  epaL3Interest <- epaL3Interest |>
+    rbind(epaL3merged |> dplyr::filter(US_L3NAME == "Puget Lowland"))
+  # mapview::mapview(epaL3Interest)
+  
+  #Record epaL3 names of interest
+  epaL3NamesInterest <- unique(epaL3Interest$US_L3NAME)
+  
+  write.csv(epaL3NamesInterest,
+            file=here::here(devDir, "l3InterestNames.csv"),
+            row.names=F)
+  
+  #Clean up
+  rm(epaL3, epaL3merged, rasterExtent, rasterPolygon, ecoWithinIndices, epaL3Interest)
+  
+} else {
+  
+  epaL3NamesInterest <- read.csv(here::here(devDir, "l3InterestNames.csv")) |> t() |> as.vector()
+
+}
+
+
+#Get L4 within these ecoregions
+epaL4Interest <- epaL4 |>
+  dplyr::filter(US_L3NAME %in% epaL3NamesInterest)
+rm(epaL4)
+
+```
+
+# Get forest stats
+
+Perform computations on forest mask layer to get per/forest stats
+
+```{r}
+# 
+# #Get total area of each L4 zone of interest
+# aoiL4Interest <- aoiL4Interest |>
+#   st.area.to.poly() |> #see functions.R
+#   dplyr::mutate(areaHa = stArea * 0.0001) #Convert to be hectares
+# 
+# 
+# 
+# #Get zonal stats
+# terraOptions(memfrac = 0.8) #Allow terra to use more memory
+# forestL4 <- fMask |>
+#   terra::zonal(z = terra::vect(aoiL4Interest), fun = "sum", na.rm = TRUE, touches = FALSE)
+# terraOptions(memfrac = 0.6)
+# 
+# #Create dataframes
+# forestL4Stats <- forestL4 |>
+#   cbind(aoiL4Interest$US_L4L3NAME, aoiL4Interest$areaHa) |>
+#   `names<-`(c("forestPix", "US_L4L3NAME", "areaHa")) |>
+#   dplyr::mutate(forestAreaHa = forestPix * 900 * 0.0001, #900m^2 / pixel, ha conversion .0001
+#                 percForest = 100 * (forestAreaHa / areaHa)) |> 
+#   dplyr::left_join(nameJoin, by = join_by(US_L4L3NAME)) %>%
+#   replace(is.na(.), 0)
+# 
+# forestL3Stats <- forestL4Stats |>
+#   dplyr::group_by(US_L3NAME, US_L3NAMECLEAN) |>
+#   dplyr::summarise(forestPix = sum(forestPix),
+#                    forestAreaHa = sum(forestAreaHa),
+#                    areaHa = sum(areaHa)) |>
+#   dplyr::mutate(percForest = 100 * (forestAreaHa / areaHa)) %>%
+#   replace(is.na(.), 0)
+# 
+# #Write out
+# readr::write_csv(forestL4Stats, file.path(devDir, "forest_l4_dats.csv"))
+# readr::write_csv(forestL3Stats, file.path(devDir, "forest_l3_dats.csv"))
+
+```
+
+
+# Core function: compute stats
+
+This function performs all operations on a given disturbance stack raster set, calling functions sourced from functions.R
+
+```{r}
+
+# Output files will be in outDir, in the form: "setNm_ecoregion_epaLevel_patchstats.csv" and "setNm_ecoregion_epaLevel_summarystats.csv"
+# PARAMETERS
+# rasterFileName : the name of a raster file to read into terra::rast()
+# aoiSet :  a set of polygons (as an sf object) for which to calculate metrics within. Operations will be parallelized across L3 ecoregions
+# setNm : a string, which clarifies what the input raster represents (e.g. "Fire"), and will be used in the output file names.
+# freqsOnly : TRUE / FALSE; if true, will only calculate frequencies. if false, will also calculate metrics
+
+calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm, freqsOnly) { 
+  #Do not allow set names with underscores or spaces
+  if(grepl("_", setNm) | grepl(" ", setNm) ) {
+    stop("'setNm' cannot contain underscores or spaces")
+  }
+  
+  #Prep raster for parallel processing
+  spatRast <- terra::rast(rasterFileName)
+  rWrap <- terra::wrap(spatRast, proxy = TRUE)
+  rm(spatRast) #remove global variable that is unserializable
+  
+
+  #Prep vectors for parallel processing: Split vectors into a wrapped list of spatVectors, with each list containing a level 3 ecoregion
+  splitVec <- aoiSet |>
+    sf.to.polygon.list(namefield = "US_L3NAME") #from functions.R
+    #sf.to.polygon.list(namefield = "US_L4CODE") #from functions.R
+
+  vs <- splitVec |> 
+    purrr::map(terra::vect) |> 
+    purrr::map(terra::wrap)
+  
+  #Run calculate raster metrics function in parallel
+  print('Starting parallel processing')
+  allDats <- vs |> furrr::future_map(~calculate.raster.metrics(raster = rWrap, aoi = .x, setNm = setNm, freqsOnly = freqsOnly), .options = furrr_options(seed = TRUE))
+  
+  # #Add dataset grouping names to outputs
+  # allDats <- purrr::map2(.x = allDats, .y = names(allDats), .f = ~add.data.aoi.nms(datSet = .x, aoiNm = .y, setNm = setNm, epaLevel = epaLvl))
+  # 
+  # # Extract and bind together freqs and metrics dataframes
+  # allFreqs <- allDats |> 
+  #   purrr::map(~ .x$freqs) |>  # Extract 'freqs' from each sublist
+  #   bind_rows()       # Combine all 'freqs' dataframes
+  # allMetrics <- allDats |> 
+  #   purrr::map(~ .x$metrics) |>  # Extract 'metrics' from each sublist
+  #   bind_rows()       # Combine all 'metrics' dataframes
+  # 
+  # #Return
+  # out <- list(allFreqs, allMetrics)
+  # names(out) <- c("freqs", "metrics")
+  # return(out)
+  # 
+}
+
+#A function to add aoi and data set names to the output tables
+add.data.aoi.nms <- function(datSet, aoiNm, setNm, epaLevel) {
+  out <- purrr::map(.x = datSet, .f = ~dplyr::mutate(.data = .x,
+                                                     dataNm = setNm,
+                                                     aoiNm = aoiNm,
+                                                     epaLevel = epaLevel))
+  
+  return(out)
+}
+
+#This function calculates frequencies and raster metrics for a given raster and aoi. Can be used in sequence or parallel
+# PARAMETERS
+# raster : a SpatRaster or PackedSpatRaster. Should be binary, with 1s designating the phenomenon of interest
+# aoi : an SF object with areas of interest. Each polygon within aoi will be treated separately. They are expected to be epa level 4 ecoregions
+# setNm : a string, which clarifies what the input raster represents (e.g. "Fire"), and will be used in the output file names
+# freqsOnly : TRUE / FALSE; if true, will only calculate frequencies. if false, will also calculate metrics. Note that metrics will only be calculated for non-zero values
+calculate.raster.metrics <- function(raster, aoi, setNm, freqsOnly = TRUE) {
+  
+  #Unpack if parallelized inputs
+  if(class(raster)[1] == "PackedSpatRaster") {
+    raster <- terra::unwrap(raster)
+  }
+  if(class(aoi)[1] == "PackedSpatVector") {
+    aoi <- sf::st_as_sf(terra::unwrap(aoi))
+  }
+
+  fs <- data.frame()
+  if(!freqsOnly) ms <- data.frame()
+  
+  #For each subregion within the aoi, perform calculations and export
+  for(i in 1:nrow(aoi)) {
+    
+    region <- aoi[i,]
+    
+    #Crop to subregion
+    rCrop <- raster |>
+      crop.careful.universal(vector = region,
+                             mask = TRUE,
+                             verbose = FALSE)
+    
+    #Get frequencies
+    f <- rCrop |>
+      terra::freq(bylayer = TRUE, usenames = TRUE, wide = TRUE) |>
+      dplyr::mutate(US_L4CODE = region$US_L4CODE,
+                    L4_UNIQUE_ID = region$L4_UNIQUE_ID)
+    
+    fs <- fs |> dplyr::bind_rows(f)
+    
+    if(!freqsOnly) {
+      
+      #Replace 0s with NA
+      rCrop <- ifel(rCrop == 0, NA, rCrop)
+      
+      # Get landscape metrics
+      m <- rCrop |>
+        calculate.lsm.with.names( #from functions.R, adds raster layer names as well
+          #full_name = TRUE, #NOTE: for some reason cyverse in parallel won't do full_names = TRUE in the function call, so have to do manually
+          directions = 8,
+          edge_depth = edgeDepth %/% resolution, #edge depth in pixels, without remainder
+          what = c(
+            'lsm_p_area',
+            'lsm_p_cai',
+            'lsm_p_core',
+            'lsm_p_enn',
+            'lsm_p_para',
+            'lsm_p_shape',
+            'lsm_p_contig',
+            'lsm_p_circle'
+          ),
+          verbose = FALSE
+        )  |>
+      dplyr::left_join(landscapemetrics::lsm_abbreviations_names, by = c("level", "metric")) |> #NOTE: for some reason cyverse in parallel won't do full_names = TRUE in the function call, so have to do manually
+      dplyr::mutate(US_L4CODE = region$US_L4CODE,
+                    L4_UNIQUE_ID = region$L4_UNIQUE_ID)
+        
+      ms <- ms |> dplyr::bind_rows(m)
+      
+    }
+    
+  }
+  
+  #Add full set dats
+  fs <- fs |>
+    dplyr::mutate(US_L3CODE = region$US_L3CODE,
+                  setNm = setNm)
+  if(!freqsOnly) {
+    ms <- ms |>
+      dplyr::mutate(US_L3CODE = region$US_L3CODE,
+                    setNm = setNm)
+  }
+
+  #Write out frequencies and metrics
+  readr::write_csv(fs, here::here(outDir, glue::glue("freqs_{setNm}_{unique(aoi$US_L3CODE)}.csv")))
+  if(!freqsOnly) readr::write_csv(ms, here::here(outDir, glue::glue("metrics_{setNm}_{unique(aoi$US_L3CODE)}.csv")))
+  # readr::write_csv(fs, here::here(outDir, glue::glue("freqs_{setNm}_{unique(aoi$US_L4CODE)}.csv")))
+  # if(!freqsOnly) readr::write_csv(ms, here::here(outDir, glue::glue("metrics_{setNm}_{unique(aoi$US_L4CODE)}.csv")))
+
+  
+  #Return data and node ID
+  cat("Data coming back from node: ", Sys.getpid(), "\n")
+  cat(setNm, unique(aoi$US_L3NAME), "\n \n")
+  
+  #Clean up
+  rm(aoi, raster, rCrop, f, fs)
+  if(!freqsOnly) rm(m, ms)
+  gc()
+  
+}  
+
+
+
+
+```
+
+# Set a test subset
+
+```{r}
+
+testSR <- epaL4Interest |>
+  dplyr::filter(US_L3NAME == "Southern Rockies")
+
+testSRMR <- epaL4Interest |>
+  dplyr::filter(US_L3NAME == "Southern Rockies" | US_L3NAME == "Middle Rockies" )
+
+
+
+r <- terra::rast(beetle5yrF[1])
+
+
+```
+
+# Use functions
+
+```{r}
+
+# TEST ON SINGLE L3 ECOREGION
+tic()
+calculate.raster.metrics(raster = r, aoi = testSR, setNm = "FIRSTTEST", freqsOnly = TRUE) 
+toc()
+#67 sec f only
+
+tic()
+calculate.raster.metrics(raster = r, aoi = testSR[1:100,], setNm = "FIRSTTEST", freqsOnly = TRUE) 
+toc()
+#9.17 sec
+
+tic()
+calculate.raster.metrics(raster = r, aoi = testSR, setNm = "FIRSTTEST", freqsOnly = FALSE) 
+toc()
+# 1416 sec both - 0s and 1s
+# 530 sec both - 1s only
+
+
+tic()
+calculate.raster.metrics(raster = r, aoi = testSR[1:100,], setNm = "FIRSTTEST", freqsOnly = FALSE) 
+toc()
+#71.3 sec both - 0s and 1s
+#41.98 sec both - 1s only
+
+
+
+tic()
+calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF[1], aoiSet = epaL4Interest, setNm = "FIRSTTESTPAR", freqsOnly = TRUE) 
+toc()
+#236.8 sec - 4 min
+
+
+
+
+````
+
+
+
+
