@@ -14,6 +14,36 @@
 
 ## GENERAL USE FUNCTIONS ----
 
+
+# A function to copy files from directoryA to directoryB if the files are not present in directory B
+copy.if.not.present <- function(directoryA, directoryB) {
+  # List all files in directoryA
+  filesInA <- list.files(directoryA, full.names = TRUE)
+  
+  # Create directoryB if it does not exist
+  if (!dir.exists(directoryB)) {
+    dir.create(directoryB)
+  }
+  
+  # Loop through each file in directoryA
+  for (file in filesInA) {
+    # Determine the filename without the directory path
+    fileName <- basename(file)
+    
+    # Construct the full path to where the file would be in directoryB
+    fileInB <- file.path(directoryB, fileName)
+    
+    # Check if the file exists in directoryB, and copy it if it does not
+    if (!file.exists(fileInB)) {
+      file.copy(file, fileInB)
+      #cat("Copied:", fileName, "to", directoryB, "\n")
+    }
+  }
+  
+  cat("Copying process completed.\n")
+}
+
+
 # A function to check and install packages provided to the function. Written in part by ChatGPT4.
 # PARAMETERS
 # packageList : a vector of packages used in the script, e.g. c("here", "dplyr")
@@ -427,6 +457,98 @@ test.serialization <- function(obj) {
   }, error = function(e) {
     cat("Can't unserialize: ", e$message, "\n")
   })
+}
+
+# Function to write a raster by layer, chatGPT4
+#
+# Description:
+#
+# This function writeRasterByLayer takes a SpatRaster object and writes each layer as a separate file in the specified output directory. The function allows for optional naming conventions where layer names can be used in the file names. An additional string can be prepended to each file name for further customization.
+#
+# Parameters:
+#
+# rasterObject (SpatRaster): The SpatRaster object containing one or more layers to be written out.
+# outputDirectory (character): Path to the directory where the output files will be saved.
+# layerNms (logical): If TRUE, the output files will be named based on the layer names within the SpatRaster object. If FALSE or if layer names are not set, layer indices will be used in the filenames. Default is FALSE.
+# appendNm (character or NULL): An optional string to be prepended to each filename. If NULL, nothing is prepended. Default is NULL.
+# ...: Additional arguments to be passed to the writeRaster function.
+# Returns:
+#
+# The function does not return a value but writes files to the specified directory.
+#
+# Usage example:
+# r <- rast(nrows=10, ncols=10, nlyrs=3)  # Example raster with 3 layers
+# values(r) <- runif(ncell(r) * nlayers(r))  # Assigning random values
+# names(r) <- c("Layer1", "Layer2", "Layer3")  # Assigning names to layers
+# writeRasterByLayer(r, "path/to/output/directory", layerNms = TRUE, appendNm = "MyRaster")
+writeRasterByLayer <- function(rasterObject, outputDirectory, layerNms = FALSE, appendNm = NULL, ...) {
+  # Check if the output directory exists; if not, create it
+  if (!dir.exists(outputDirectory)) {
+    dir.create(outputDirectory, recursive = TRUE)
+  }
+
+  # Loop through each layer of the raster and write it as a separate file
+  for (layerIndex in 1:nlayers(rasterObject)) {
+    # Extract the current layer
+    layer <- rasterObject[[layerIndex]]
+
+    # Determine the filename based on layerNms and appendNm parameters
+    fileNameSuffix <- if (layerNms && !is.null(names(layer)) && names(layer) != "") {
+      gsub("[^a-zA-Z0-9]", "_", names(layer))
+    } else {
+      paste0("layer_", layerIndex)
+    }
+
+    fileName <- paste0(outputDirectory, "/", if (!is.null(appendNm)) paste0(appendNm, "_"), fileNameSuffix, ".tif")
+
+    # Write the layer to a file, passing along any additional arguments
+    terra::writeRaster(layer, fileName, ..., overwrite = TRUE)
+  }
+
+  cat("All layers have been written to", outputDirectory, "\n")
+}
+
+
+# Function to add a layer name to a raster based on its file name, chatGPT4
+# Description:
+#
+# The function rastAddLyrNmWrite reads a raster file from a given file path, sets its layer name based on the base file name, and writes the raster back to the same file path, overwriting the original file. This function is useful for adding meaningful layer names to raster files based on their filenames.
+#
+# Parameters:
+#
+# filePath (character): The file path of the raster to be read and modified.
+# ...: Additional arguments to be passed to the writeRaster function.
+# Returns:
+#
+# The function does not return a value but updates the raster file at the specified file path.
+#
+# Usage example:
+# rastAddLyrNmWrite("path/to/directory/file.tif")
+rastAddLyrNmWrite <- function(filePath, ...) {
+  # Read the raster
+  rastObj <- rast(filePath)
+
+  # Extract the base file name without the extension to use as the layer name
+  baseFileName <- tools::file_path_sans_ext(basename(filePath))
+
+  # Set the layer name
+  names(rastObj) <- baseFileName
+
+  # Define an intermediate file path
+  intermediateFilePath <- paste0(dirname(filePath), "/intermediate_", basename(filePath))
+
+  # Write the raster to the intermediate file, passing any additional arguments
+  terra::writeRaster(rastObj, intermediateFilePath, ..., overwrite = TRUE)
+
+  # Delete the original file
+  if (file.exists(filePath)) {
+    file.remove(filePath)
+  }
+
+  # Rename the intermediate file to the original file path
+  file.rename(intermediateFilePath, filePath)
+
+  cat("Updated raster written to", filePath, "\n")
 }
 
 ## PROJECT-SPECIFIC FUNCTIONS ----
