@@ -22,8 +22,8 @@ rm(list=ls()) #Ensure empty workspace if running from beginning
 #####EVERYTHING HERE SHOULD BE SET MANUALLY######
 #################################################
 
-computing <- "local" #Sets computing location and file setup; "cyverse" or "local"
-nCores <- 16 #Number of cores available - only necessary if on CyVerse (future package struggles to read automatically on CyVerse, reads 128 (the maximum number of cores)
+computing <- "cyverse" #Sets computing location and file setup; "cyverse" or "local"
+nCores <- 30 #Number of cores available - only necessary if on CyVerse (future package struggles to read automatically on CyVerse, reads 128 (the maximum number of cores)
 
 forestPercCutoff <- 1 #The percentage of forest below which EPA regions will not be retained for calculations
 edgeDepth <- 200 #the edge depth to use for all landscapemetrics 'core' caluclations, in meters
@@ -35,15 +35,18 @@ resolution <- 30 #of the input rasters, in meters
 require(here)
 
 #Set here location
-here::i_am("code/02v4_regional_disturbance_stats.qmd")
+here::i_am("code/try_fresh_dStats.qmd")
 
-#Move data if on cyverse
-if(computing == "cyverse") {
-  system("cp -R ~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data /home/jovyan/data-store/disturbance-stack-patch-analysis/")
-}
 
 #Set directories
 home <- here::here()
+
+if(!dir.exists(here::here(home,'data'))) {
+  #Move data if on cyverse
+  if(computing == "cyverse") {
+    system("cp -R ~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data /home/jovyan/data-store/disturbance-stack-patch-analysis/")
+  }
+}
 
 #Raw data
 rawDir <- file.path(home, 'data/raw')
@@ -98,7 +101,6 @@ options(future.globals.onReference = "error")
 
 ```
 
-
 # Load data & paths for derived data
 
 ```{r load-data, echo = FALSE}
@@ -140,8 +142,7 @@ crsUse <- terra::crs(terra::rast(fMaskF))
 
 ```
 
-
-# Mange EPA ecoregions 
+# Mange EPA ecoregions
 
 ```{r}
 
@@ -174,7 +175,7 @@ if (!"l3InterestNames.csv" %in% list.files(devDir, full.names = FALSE)) {
     dplyr::summarize(geometry = st_union(geometry))
   
   #Get the L3 EPA ecoregions that are fully contained by the raster
-  rasterExtent <- terra::ext(fMask)
+  rasterExtent <- terra::ext(terra::rast(fMaskF))
   
   rasterPolygon <- sf::st_as_sf(terra::vect(rasterExtent, crs = crsUse))
   
@@ -199,6 +200,9 @@ if (!"l3InterestNames.csv" %in% list.files(devDir, full.names = FALSE)) {
   write.csv(epaL3NamesInterest,
             file=here::here(devDir, "l3InterestNames.csv"),
             row.names=F)
+  if(computing == "cyverse") {
+    system("cp /home/jovyan/data-store/disturbance-stack-patch-analysis/derived/l3InterestNames.csv ~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived ")
+  }
   
   #Clean up
   rm(epaL3, epaL3merged, rasterExtent, rasterPolygon, ecoWithinIndices, epaL3Interest)
@@ -259,7 +263,6 @@ Perform computations on forest mask layer to get per/forest stats
 
 ```
 
-
 # Core function: compute stats
 
 This function performs all operations on a given disturbance stack raster set, calling functions sourced from functions.R
@@ -281,6 +284,7 @@ calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm, 
   
   #Prep raster for parallel processing
   spatRast <- terra::rast(rasterFileName)
+  lyrNm <- names(spatRast)
   rWrap <- terra::wrap(spatRast, proxy = TRUE)
   rm(spatRast) #remove global variable that is unserializable
   
@@ -295,8 +299,10 @@ calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm, 
     purrr::map(terra::wrap)
   
   #Run calculate raster metrics function in parallel
-  print('Starting parallel processing')
+  print(glue::glue('Starting parallel processing for {lyrNm}'))
   allDats <- vs |> furrr::future_map(~calculate.raster.metrics(raster = rWrap, aoi = .x, setNm = setNm, freqsOnly = freqsOnly), .options = furrr_options(seed = TRUE))
+  
+  rm(rWrap, splitVec, vs)
   
   # #Add dataset grouping names to outputs
   # allDats <- purrr::map2(.x = allDats, .y = names(allDats), .f = ~add.data.aoi.nms(datSet = .x, aoiNm = .y, setNm = setNm, epaLevel = epaLvl))
@@ -332,7 +338,7 @@ add.data.aoi.nms <- function(datSet, aoiNm, setNm, epaLevel) {
 # aoi : an SF object with areas of interest. Each polygon within aoi will be treated separately. They are expected to be epa level 4 ecoregions
 # setNm : a string, which clarifies what the input raster represents (e.g. "Fire"), and will be used in the output file names
 # freqsOnly : TRUE / FALSE; if true, will only calculate frequencies. if false, will also calculate metrics. Note that metrics will only be calculated for non-zero values
-calculate.raster.metrics <- function(raster, aoi, setNm, freqsOnly = TRUE) {
+calculate.raster.metrics <- function(raster, aoi, setNm, freqsOnly) {
   
   #Unpack if parallelized inputs
   if(class(raster)[1] == "PackedSpatRaster") {
@@ -408,8 +414,8 @@ calculate.raster.metrics <- function(raster, aoi, setNm, freqsOnly = TRUE) {
   }
 
   #Write out frequencies and metrics
-  readr::write_csv(fs, here::here(outDir, glue::glue("freqs_{setNm}_{unique(aoi$US_L3CODE)}.csv")))
-  if(!freqsOnly) readr::write_csv(ms, here::here(outDir, glue::glue("metrics_{setNm}_{unique(aoi$US_L3CODE)}.csv")))
+  readr::write_csv(fs, here::here(outDir, glue::glue("freqs_{setNm}_{gsub('_', '-', names(rCrop))}_{unique(aoi$US_L3CODE)}.csv")))
+  if(!freqsOnly) readr::write_csv(ms, here::here(outDir, glue::glue("metrics_{setNm}_{gsub('_', '-', names(rCrop))}_{unique(aoi$US_L3CODE)}.csv")))
   # readr::write_csv(fs, here::here(outDir, glue::glue("freqs_{setNm}_{unique(aoi$US_L4CODE)}.csv")))
   # if(!freqsOnly) readr::write_csv(ms, here::here(outDir, glue::glue("metrics_{setNm}_{unique(aoi$US_L4CODE)}.csv")))
 
@@ -456,14 +462,16 @@ tic()
 calculate.raster.metrics(raster = r, aoi = testSR, setNm = "FIRSTTEST", freqsOnly = TRUE) 
 toc()
 #67 sec f only
+#23 sec on cyverse
 
 tic()
 calculate.raster.metrics(raster = r, aoi = testSR[1:100,], setNm = "FIRSTTEST", freqsOnly = TRUE) 
 toc()
 #9.17 sec
+#3 sec on cyverse
 
 tic()
-calculate.raster.metrics(raster = r, aoi = testSR, setNm = "FIRSTTEST", freqsOnly = FALSE) 
+calculate.raster.metrics(raster = r, aoi = testSR, setNm = "FIRSTTESTALL", freqsOnly = FALSE) 
 toc()
 # 1416 sec both - 0s and 1s
 # 530 sec both - 1s only
@@ -474,19 +482,50 @@ calculate.raster.metrics(raster = r, aoi = testSR[1:100,], setNm = "FIRSTTEST", 
 toc()
 #71.3 sec both - 0s and 1s
 #41.98 sec both - 1s only
-
+#16 sec both on cyverse
 
 
 tic()
 calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF[1], aoiSet = epaL4Interest, setNm = "FIRSTTESTPAR", freqsOnly = TRUE) 
 toc()
 #236.8 sec - 4 min
+#125.8 sec - 2 min on cyverse
+
+
+tic()
+calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF[1], aoiSet = epaL4Interest, setNm = "FIRSTTESTPAR", freqsOnly = FALSE) 
+toc()
+#609.4 sec - 609.4 sec - 10 min on cyverse
+
+```
+
+# Scale
+
+```{r}
+
+#Single by yr
+
+
+#Single 5 yr
+tic()
+beetle5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "beetle5yr", freqsOnly = TRUE))
+toc()
+
+fire5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fire5yr", freqsOnly = TRUE))
+
+drought5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "drought5yr", freqsOnly = TRUE))
+
+
+#Double 5yr
+fireBeetle5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireBeetle5yr", freqsOnly = TRUE))
+
+fireDrought5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireDrought5yr", freqsOnly = TRUE))
+
+droughtBeetle5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "droughtBeetle5yr", freqsOnly = TRUE))
+
+#Triple 5yr
+fireBeetleDrought5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireBeetleDrought5yr", freqsOnly = TRUE))
 
 
 
-
-````
-
-
-
-
+```
