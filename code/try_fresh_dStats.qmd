@@ -136,7 +136,7 @@ fire5yrF <- list.files(file.path(natOut), pattern = "fire_totals", full.names = 
 fireDrought5yrF <- list.files(file.path(natOut, "fire-dought"), pattern = "fire_drought_totals", full.names = TRUE)
 fireBeetle5yrF <- list.files(file.path(natOut, "fire-beetle"), pattern = "fire_beetle_totals", full.names = TRUE)
 droughtBeetle5yrF <- list.files(file.path(natOut, "drought-beetle"), pattern = "bettle_drought_totals", full.names = TRUE)
-fireBeetleDrought5yrF <- list.files(file.path(natOut, "all-unique", pattern = "all_unique", full.names = TRUE))
+fireBeetleDrought5yrF <- list.files(file.path(natOut, "all-unique"), pattern = "all_unique", full.names = TRUE)
 
 crsUse <- terra::crs(terra::rast(fMaskF))
 
@@ -276,7 +276,7 @@ This function performs all operations on a given disturbance stack raster set, c
 # setNm : a string, which clarifies what the input raster represents (e.g. "Fire"), and will be used in the output file names.
 # freqsOnly : TRUE / FALSE; if true, will only calculate frequencies. if false, will also calculate metrics
 
-calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm, freqsOnly) { 
+calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm, freqsOnly, verbose, metricMergeThresh, metricIgnore) { 
   #Do not allow set names with underscores or spaces
   if(grepl("_", setNm) | grepl(" ", setNm) ) {
     stop("'setNm' cannot contain underscores or spaces")
@@ -299,8 +299,8 @@ calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm, 
     purrr::map(terra::wrap)
   
   #Run calculate raster metrics function in parallel
-  print(glue::glue('Starting parallel processing for {lyrNm}'))
-  allDats <- vs |> furrr::future_map(~calculate.raster.metrics(raster = rWrap, aoi = .x, setNm = setNm, freqsOnly = freqsOnly), .options = furrr_options(seed = TRUE))
+  if (verbose) print(glue::glue('Starting parallel processing for {lyrNm}'))
+  allDats <- vs |> furrr::future_map(~calculate.raster.metrics(raster = rWrap, aoi = .x, setNm = setNm, freqsOnly = freqsOnly, verbose = verbose, metricMergeThresh = metricMergeThresh, metricIgnore = metricIgnore), .options = furrr_options(seed = TRUE))
   
   rm(rWrap, splitVec, vs)
   
@@ -338,7 +338,7 @@ add.data.aoi.nms <- function(datSet, aoiNm, setNm, epaLevel) {
 # aoi : an SF object with areas of interest. Each polygon within aoi will be treated separately. They are expected to be epa level 4 ecoregions
 # setNm : a string, which clarifies what the input raster represents (e.g. "Fire"), and will be used in the output file names
 # freqsOnly : TRUE / FALSE; if true, will only calculate frequencies. if false, will also calculate metrics. Note that metrics will only be calculated for non-zero values
-calculate.raster.metrics <- function(raster, aoi, setNm, freqsOnly) {
+calculate.raster.metrics <- function(raster, aoi, setNm, freqsOnly, verbose, metricMergeThresh = NA, metricIgnore = NA) {
   
   #Unpack if parallelized inputs
   if(class(raster)[1] == "PackedSpatRaster") {
@@ -374,6 +374,16 @@ calculate.raster.metrics <- function(raster, aoi, setNm, freqsOnly) {
       
       #Replace 0s with NA
       rCrop <- ifel(rCrop == 0, NA, rCrop)
+      
+      #Ignore anything in metricIgnore
+      if(!is.na(metricIgnore)) {
+        rCrop <- ifel(rCrop == metricIgnore, NA, rCrop)
+      }
+      
+      #Replace anything greater than metricMergeThresh with 1
+      if(!is.na(metricMergeThresh)) {
+        rCrop <- ifel(rCrop >= metricMergeThresh, 1, rCrop)
+      }
       
       # Get landscape metrics
       m <- rCrop |>
@@ -421,9 +431,11 @@ calculate.raster.metrics <- function(raster, aoi, setNm, freqsOnly) {
 
   
   #Return data and node ID
-  cat("Data coming back from node: ", Sys.getpid(), "\n")
-  cat(setNm, unique(aoi$US_L3NAME), "\n \n")
-  
+  if(verbose) {
+      cat("Data coming back from node: ", Sys.getpid(), "\n")
+    cat(setNm, unique(aoi$US_L3NAME), "\n \n")
+  }
+
   #Clean up
   rm(aoi, raster, rCrop, f, fs)
   if(!freqsOnly) rm(m, ms)
@@ -459,41 +471,42 @@ r <- terra::rast(beetle5yrF[1])
 
 # TEST ON SINGLE L3 ECOREGION
 tic()
-calculate.raster.metrics(raster = r, aoi = testSR, setNm = "FIRSTTEST", freqsOnly = TRUE) 
+calculate.raster.metrics(raster = r, aoi = testSR, setNm = "FIRSTTEST", freqsOnly = TRUE, verbose = FALSE) 
 toc()
 #67 sec f only
 #23 sec on cyverse
 
 tic()
-calculate.raster.metrics(raster = r, aoi = testSR[1:100,], setNm = "FIRSTTEST", freqsOnly = TRUE) 
+calculate.raster.metrics(raster = r, aoi = testSR[1:100,], setNm = "FIRSTTEST", freqsOnly = TRUE, verbose = FALSE) 
 toc()
 #9.17 sec
 #3 sec on cyverse
 
 tic()
-calculate.raster.metrics(raster = r, aoi = testSR, setNm = "FIRSTTESTALL", freqsOnly = FALSE) 
+calculate.raster.metrics(raster = r, aoi = testSR, setNm = "FIRSTTESTALL", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2, metricIgnore = 1) 
 toc()
-# 1416 sec both - 0s and 1s
-# 530 sec both - 1s only
+# 1416 sec both - 0s and 1s, no thresholds
+# 530 sec both - 1s only, no thresholds
 
 
 tic()
-calculate.raster.metrics(raster = r, aoi = testSR[1:100,], setNm = "FIRSTTEST", freqsOnly = FALSE) 
+calculate.raster.metrics(raster = r, aoi = testSR[1:100,], setNm = "FIRSTTEST", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2, metricIgnore = 1) 
 toc()
 #71.3 sec both - 0s and 1s
 #41.98 sec both - 1s only
 #16 sec both on cyverse
+# 15 sec both on cyverse with thresholding
 
 
 tic()
-calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF[1], aoiSet = epaL4Interest, setNm = "FIRSTTESTPAR", freqsOnly = TRUE) 
+calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF[1], aoiSet = epaL4Interest, setNm = "FIRSTTESTPAR", freqsOnly = TRUE, verbose = FALSE) 
 toc()
 #236.8 sec - 4 min
 #125.8 sec - 2 min on cyverse
 
 
 tic()
-calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF[1], aoiSet = epaL4Interest, setNm = "FIRSTTESTPAR", freqsOnly = FALSE) 
+calculate.metrics.for.raster.aoi.set(rasterFileName = beetle5yrF[1], aoiSet = epaL4Interest, setNm = "FIRSTTESTPAR", freqsOnly = FALSE, verbose = FALSE) 
 toc()
 #609.4 sec - 609.4 sec - 10 min on cyverse
 
@@ -503,29 +516,42 @@ toc()
 
 ```{r}
 
+tic("ALL PRODUCTION")
+
 #Single by yr
 
 
 #Single 5 yr
-tic()
-beetle5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "beetle5yr", freqsOnly = TRUE))
+tic("beetle5yr")
+beetle5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "beetle5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2, metricIgnore = 1))
+toc()
+#1204.3 sec, ~20 min
+
+tic("fire5yr")
+fire5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fire5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2, metricIgnore = 1))
 toc()
 
-fire5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fire5yr", freqsOnly = TRUE))
-
-drought5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "drought5yr", freqsOnly = TRUE))
-
+tic("drought5yr")
+drought5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "drought5yr", freqsOnly = TRUE, verbose = FALSE))
+toc()
 
 #Double 5yr
-fireBeetle5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireBeetle5yr", freqsOnly = TRUE))
+tic("fireBeetle5yr")
+fireBeetle5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireBeetle5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2))
+toc()
 
-fireDrought5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireDrought5yr", freqsOnly = TRUE))
+tic("fireDrought5yr")
+fireDrought5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireDrought5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2))
+toc()
 
-droughtBeetle5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "droughtBeetle5yr", freqsOnly = TRUE))
+tic("droughtBeetle5yr")
+droughtBeetle5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "droughtBeetle5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2))
 
 #Triple 5yr
-fireBeetleDrought5yrF |> purrr::map(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireBeetleDrought5yr", freqsOnly = TRUE))
+tic("fireBeetleDrought5yr")
+fireBeetleDrought5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireBeetleDrought5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 3))
+toc()
 
-
+toc()
 
 ```
