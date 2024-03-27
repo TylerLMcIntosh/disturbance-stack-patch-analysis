@@ -267,7 +267,7 @@ This function performs all operations on a given disturbance stack raster set, c
 # setNm : a string, which clarifies what the input raster represents (e.g. "Fire"), and will be used in the output file names.
 # freqsOnly : TRUE / FALSE; if true, will only calculate frequencies. if false, will also calculate metrics
 
-calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm, freqsOnly, verbose = FALSE, metricMergeThresh = NA, metricIgnore = NA) { 
+calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm, freqsOnly, verbose = FALSE, metricMergeThresh = NA, metricIgnore = NA, memmax = NA) { 
   #Do not allow set names with underscores or spaces
   if(grepl("_", setNm) | grepl(" ", setNm) ) {
     stop("'setNm' cannot contain underscores or spaces")
@@ -291,7 +291,7 @@ calculate.metrics.for.raster.aoi.set <- function(rasterFileName, aoiSet, setNm, 
   
   #Run calculate raster metrics function in parallel
   if (verbose) print(glue::glue('Starting parallel processing for {lyrNm}'))
-  allDats <- vs |> furrr::future_map(~calculate.raster.metrics(raster = rWrap, aoi = .x, setNm = setNm, freqsOnly = freqsOnly, verbose = verbose, metricMergeThresh = metricMergeThresh, metricIgnore = metricIgnore), .options = furrr_options(seed = TRUE))
+  allDats <- vs |> furrr::future_map(~calculate.raster.metrics(raster = rWrap, aoi = .x, setNm = setNm, freqsOnly = freqsOnly, verbose = verbose, metricMergeThresh = metricMergeThresh, metricIgnore = metricIgnore, memmax = memmax), .options = furrr_options(seed = TRUE))
   
   rm(rWrap, splitVec, vs)
   
@@ -329,7 +329,9 @@ add.data.aoi.nms <- function(datSet, aoiNm, setNm, epaLevel) {
 # aoi : an SF object with areas of interest. Each polygon within aoi will be treated separately. They are expected to be epa level 4 ecoregions
 # setNm : a string, which clarifies what the input raster represents (e.g. "Fire"), and will be used in the output file names
 # freqsOnly : TRUE / FALSE; if true, will only calculate frequencies. if false, will also calculate metrics. Note that metrics will only be calculated for non-zero values
-calculate.raster.metrics <- function(raster, aoi, setNm, freqsOnly, verbose = FALSE, metricMergeThresh = NA, metricIgnore = NA) {
+calculate.raster.metrics <- function(raster, aoi, setNm, freqsOnly, verbose = FALSE, metricMergeThresh = NA, metricIgnore = NA, memmax = NA) {
+  
+  if(!is.na(memmax)) terra::terraOptions(memmax = memmax)
   
   #Unpack if parallelized inputs
   if(class(raster)[1] == "PackedSpatRaster") {
@@ -563,10 +565,10 @@ if(computing == "cyverse") copy.if.not.present("/home/jovyan/data-store/disturba
 
 #Double 5yr
 tic("fireBeetle5yr")
-fireBeetle5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireBeetle5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2))
+fireBeetle5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireBeetle5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2, memmax = 13))
 toc()
 
-if(computing == "cyverse") copy.if.not.present("/home/jovyan/data-store/disturbance-stack-patch-analysis/data/derived/summary_stats", "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived/summary_stats")
+
 
 
 tic("fireDrought5yr")
