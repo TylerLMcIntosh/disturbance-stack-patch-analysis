@@ -504,7 +504,9 @@ calculate.raster.metrics <- function(raster, aoi, setNm, freqsOnly, verbose = FA
 # #609.4 sec - 609.4 sec - 10 min on cyverse
 
 ```
+
 # FIX DSTACK NAMES
+
 ```{r}
 # terraOptions(memmax = 100)
 # plot(rast(file.path(rawDir, "western-conus/forest-disturbance-stack_western-conus_2000.tif")))
@@ -517,7 +519,6 @@ calculate.raster.metrics <- function(raster, aoi, setNm, freqsOnly, verbose = FA
 # system("cp -r /home/jovyan/data-store/disturbance-stack-patch-analysis/data/raw/western-conus ~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/raw/western-conus-withnames")
 
 ```
-
 
 # Scale
 
@@ -567,19 +568,24 @@ if(computing == "cyverse") copy.if.not.present("/home/jovyan/data-store/disturba
 tic("fireBeetle5yr")
 fireBeetle5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireBeetle5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2, memmax = 13))
 toc()
+#9595 sec on cyverse
 
+if(computing == "cyverse") copy.if.not.present("/home/jovyan/data-store/disturbance-stack-patch-analysis/data/derived/summary_stats", "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived/summary_stats")
 
 
 
 tic("fireDrought5yr")
 fireDrought5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireDrought5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2))
 toc()
+#8754.934 sec
 
 if(computing == "cyverse") copy.if.not.present("/home/jovyan/data-store/disturbance-stack-patch-analysis/data/derived/summary_stats", "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived/summary_stats")
 
 
 tic("droughtBeetle5yr")
-droughtBeetle5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "droughtBeetle5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2))
+droughtBeetle5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "droughtBeetle5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 2, memmax = 13))
+toc()
+#done
 
 if(computing == "cyverse") copy.if.not.present("/home/jovyan/data-store/disturbance-stack-patch-analysis/data/derived/summary_stats", "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived/summary_stats")
 
@@ -588,6 +594,7 @@ if(computing == "cyverse") copy.if.not.present("/home/jovyan/data-store/disturba
 tic("fireBeetleDrought5yr")
 fireBeetleDrought5yrF |> purrr::walk(~calculate.metrics.for.raster.aoi.set(rasterFileName = .x, aoiSet = epaL4Interest, setNm = "fireBeetleDrought5yr", freqsOnly = FALSE, verbose = FALSE, metricMergeThresh = 3))
 toc()
+#8807.6 sec
 
 if(computing == "cyverse") copy.if.not.present("/home/jovyan/data-store/disturbance-stack-patch-analysis/data/derived/summary_stats", "~/data-store/data/iplant/home/shared/earthlab/macrosystems/disturbance-stack-patch-analysis/data/derived/summary_stats")
 
